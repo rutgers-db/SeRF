@@ -13,7 +13,7 @@
 #include <unordered_set>
 
 #include "hnswlib.h"
-#include "range_index_base.h"
+#include "index_base.h"
 #include "visited_list_pool.h"
 
 using std::string;

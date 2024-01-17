@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.9)
+cmake_minimum_required(VERSION 3.12)
 project(RangeFiltering-ANNS)
 
 find_package(OpenMP)
@@ -8,16 +8,12 @@ if (OPENMP_FOUND)
     set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
 endif()
 
-# MESSAGE(STATUS ${OpenMP_CXX})
+MESSAGE(STATUS ${CMAKE_CXX_FLAGS})
 
 set(CMAKE_CXX_STANDARD 11)
 
 message(${CMAKE_SYSTEM})
 
-
-SET (BOOST_ROOT "/data/local/download/boost/boost_1_77_0")
-SET (BOOST_INCLUDEDIR "/data/local/download/boost/boost_1_77_0")
-SET (BOOST_LIBRARYDIR "/data/local/download/boost/boost_1_77_0/stage/lib")
 find_package(Boost REQUIRED COMPONENTS timer chrono system program_options)
 
 
@@ -44,12 +40,7 @@ IF(NOSIMD)
     add_definitions(-DKGRAPH_NO_VECTORIZE)
 ENDIF(NOSIMD)
 
-# include_directories(../third_party/faiss)
 
 add_subdirectory(src/common)
-add_subdirectory(tests)
+add_subdirectory(benchmark)
 
-
-# link_directories(/usr/local/lib) 
-# link_directories(/usr/local/Cellar/opencv/4.5.5/lib)
-# include_directories(${OpenCV_INCLUDE_DIRS})

@@ -9,22 +9,21 @@
  */
 #pragma once
 
-#include <ctime>
-#include <fstream>
-#include <functional>
-#include <iostream>
-#include <vector>
-// #include <omp.h>
 #include <assert.h>
 #include <sys/time.h>
 
 #include <algorithm>
+#include <ctime>
+#include <fstream>
+#include <functional>
 #include <iostream>
 #include <numeric>
 #include <queue>
 #include <random>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #ifdef __linux__
 #include "sys/sysinfo.h"
@@ -166,3 +165,5 @@ vector<int> greedyNearest(const vector<vector<float>> &dpts,
 
 void heuristicPrune(const vector<vector<float>> &nodes,
                     vector<pair<int, float>> &top_candidates, const size_t M);
+
+vector<int> str2vec(const string str);

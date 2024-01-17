@@ -225,7 +225,7 @@ vector<int> greedyNearest(const vector<vector<float>> &dpts,
 void greedyNearest(const int query_pos, const vector<vector<float>> &dpts,
                    const int k_smallest, const int l_bound, const int r_bound) {
   vector<float> dist_arr;
-  for (size_t i = l_bound; i < r_bound; i++) {
+  for (size_t i = l_bound; i <= r_bound; i++) {
     dist_arr.emplace_back(EuclideanDistance(dpts[query_pos], dpts[i], 0, 0));
   }
   vector<int> sorted_idxes = sort_indexes(dist_arr);
@@ -240,7 +240,7 @@ void greedyNearest(const int query_pos, const vector<vector<float>> &dpts,
 
 void rangeGreedy(const vector<vector<float>> &nodes, const int k_smallest,
                  const int l_bound, const int r_bound) {
-  for (size_t i = l_bound; i < r_bound; i++) {
+  for (size_t i = l_bound; i <= r_bound; i++) {
     greedyNearest(i, nodes, k_smallest, l_bound, r_bound);
   }
 }
@@ -308,4 +308,14 @@ void heuristicPrune(const vector<vector<float>> &nodes,
     top_candidates.emplace_back(
         make_pair(curent_pair.second, -curent_pair.first));
   }
+}
+
+vector<int> str2vec(const string str) {
+  std::vector<int> vect;
+  std::stringstream ss(str);
+  for (int i; ss >> i;) {
+    vect.push_back(i);
+    if (ss.peek() == ',') ss.ignore();
+  }
+  return vect;
 }

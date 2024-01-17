@@ -1,7 +1,7 @@
 #pragma once
 #include "hnswlib.h"
 
-namespace delta_index_hnsw_full_reverse {
+namespace base_hnsw {
 
 static float InnerProduct(const void *pVect1, const void *pVect2,
                           const void *qty_ptr) {

@@ -1,9 +1,9 @@
 /**
- * @file index_half_bounded.h
+ * @file segment_graph_1d.h
  * @author Chaoji Zuo (chaoji.zuo@rutgers.edu)
  * @brief Index for half-bounded range filtering search.
  * Lossless compression on N hnsw on search space
- * @date 2023-06-29
+ * @date 2023-06-29; Revised 2023-12-29
  *
  * @copyright Copyright (c) 2023
  */
@@ -11,30 +11,48 @@
 #include <algorithm>
 #include <ctime>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <queue>
 #include <vector>
 
-#include "../delta_base_hnsw/hnswalg.h"
-#include "../delta_base_hnsw/hnswlib.h"
-#include "base_struct.h"
+#include "base_hnsw/hnswalg.h"
+#include "base_hnsw/hnswlib.h"
 #include "data_wrapper.h"
-// #include "hnswalg.h"
-// #include "hnswlib.h"
-#include "range_index_base.h"
+#include "index_base.h"
 #include "utils.h"
 
-using namespace delta_index_hnsw_full_reverse;
-#define INT_MAX __INT_MAX__
+using namespace base_hnsw;
+// #define INT_MAX __INT_MAX__
 
-namespace halfrangeindex {
+namespace SeRF {
 
+/**
+ * @brief segment neighbor structure to store segment graph edge information
+ * if id==end_id, means haven't got pruned
+ * id: neighbor id
+ * dist: neighbor dist
+ * end_id: when got pruned
+ */
 template <typename dist_t>
-class HalfBoundedHNSW : public HierarchicalNSW<float> {
+struct SegmentNeighbor1D {
+  SegmentNeighbor1D(int id) : id(id){};
+  SegmentNeighbor1D(int id, dist_t dist, int end_id)
+      : id(id), dist(dist), end_id(end_id){};
+  int id;
+  dist_t dist;
+  int end_id;
+};
+
+// Inherit from basic HNSW, modify the 'heuristic pruning' procedure to record
+// the lifecycle for SegmentGraph
+template <typename dist_t>
+class SegmentGraph1DHNSW : public HierarchicalNSW<float> {
  public:
-  HalfBoundedHNSW(const BaseIndex::IndexParams &index_params,
-                  SpaceInterface<dist_t> *s, size_t max_elements, size_t M = 16,
-                  size_t ef_construction = 200, size_t random_seed = 100)
+  SegmentGraph1DHNSW(const BaseIndex::IndexParams &index_params,
+                     SpaceInterface<dist_t> *s, size_t max_elements,
+                     size_t M = 16, size_t ef_construction = 200,
+                     size_t random_seed = 100)
       : HierarchicalNSW(s, max_elements, M, index_params.ef_construction,
                         random_seed) {
     params = &index_params;
@@ -45,8 +63,78 @@ class HalfBoundedHNSW : public HierarchicalNSW<float> {
   }
 
   const BaseIndex::IndexParams *params;
-  vector<vector<NeighborLifeCycle<dist_t>>> *range_nns;
 
+  // index storing structure
+  vector<vector<SegmentNeighbor1D<dist_t>>> *range_nns;
+
+  void getNeighborsByHeuristic2RecordPruned(
+      std::priority_queue<std::pair<dist_t, tableint>,
+                          std::vector<std::pair<dist_t, tableint>>,
+                          CompareByFirst> &top_candidates,
+      const size_t M, vector<SegmentNeighbor1D<dist_t>> *back_nns,
+      const int end_pos_id) {
+    if (top_candidates.size() < M) {
+      return;
+    }
+
+    std::priority_queue<std::pair<dist_t, tableint>> queue_closest;
+    std::vector<std::pair<dist_t, tableint>> return_list;
+    while (top_candidates.size() > 0) {
+      queue_closest.emplace(-top_candidates.top().first,
+                            top_candidates.top().second);
+      top_candidates.pop();
+    }
+
+    while (queue_closest.size()) {
+      if (return_list.size() >= M) break;
+      std::pair<dist_t, tableint> curent_pair = queue_closest.top();
+      dist_t dist_to_query = -curent_pair.first;
+      queue_closest.pop();
+      bool good = true;
+
+      for (std::pair<dist_t, tableint> second_pair : return_list) {
+        dist_t curdist = fstdistfunc_(getDataByInternalId(second_pair.second),
+                                      getDataByInternalId(curent_pair.second),
+                                      dist_func_param_);
+        if (curdist < dist_to_query) {
+          good = false;
+          break;
+        }
+      }
+      if (good) {
+        return_list.push_back(curent_pair);
+      } else {
+        // record pruned nns, store in range_nns
+        int external_nn = this->getExternalLabel(curent_pair.second);
+        if (external_nn != end_pos_id) {
+          SegmentNeighbor1D<dist_t> pruned_nn(external_nn, dist_to_query,
+                                              end_pos_id);
+          back_nns->emplace_back(pruned_nn);
+        }
+      }
+    }
+
+    // add unvisited nns
+    while (queue_closest.size()) {
+      std::pair<dist_t, tableint> curent_pair = queue_closest.top();
+      int external_nn = this->getExternalLabel(curent_pair.second);
+      queue_closest.pop();
+
+      if (external_nn != end_pos_id) {
+        SegmentNeighbor1D<dist_t> pruned_nn(external_nn, -curent_pair.first,
+                                            end_pos_id);
+        back_nns->emplace_back(pruned_nn);
+      }
+    }
+
+    for (std::pair<dist_t, tableint> curent_pair : return_list) {
+      top_candidates.emplace(-curent_pair.first, curent_pair.second);
+    }
+  }
+
+  // since the order is important, SeRF use the external_id rather than the
+  // inernal_id, but right now SeRF only supports building in one thread, so
+  // acutally current external_id is equal to internal_id(cur_c).
   virtual tableint mutuallyConnectNewElementLevel0(
       const void *data_point, tableint cur_c,
       std::priority_queue<std::pair<dist_t, tableint>,
@@ -62,17 +150,11 @@ class HalfBoundedHNSW : public HierarchicalNSW<float> {
 
     // forward neighbors in top candidates
     int external_id = this->getExternalLabel(cur_c);
-    auto nns = &range_nns->at(external_id);
 
     std::vector<tableint> selectedNeighbors;
     selectedNeighbors.reserve(this->M_);
     while (top_candidates.size() > 0) {
       selectedNeighbors.push_back(top_candidates.top().second);
-
-      int external_nn = this->getExternalLabel(selectedNeighbors.back());
-      NeighborLifeCycle<dist_t> nn(external_nn, top_candidates.top().first,
-                                   external_nn, external_nn);
-      nns->emplace_back(nn);
 
       top_candidates.pop();
     }
@@ -143,13 +225,6 @@ class HalfBoundedHNSW : public HierarchicalNSW<float> {
           data[sz_link_list_other] = cur_c;
           this->setListCount(ll_other, sz_link_list_other + 1);
 
-          // add external_id to nns (backward nn)
-          int external_backward_id =
-              this->getExternalLabel(selectedNeighbors[idx]);
-          NeighborLifeCycle<dist_t> backward_nn(external_id, 0, external_id,
-                                                external_id);
-          range_nns->at(external_backward_id).emplace_back(backward_nn);
-
         } else {
           // finding the "weakest" element to replace it with the new one
           dist_t d_max =
@@ -171,45 +246,12 @@ class HalfBoundedHNSW : public HierarchicalNSW<float> {
                 data[j]);
           }
 
-          getNeighborsByHeuristic2(candidates, Mcurmax);
-
-          // Backward nns in candidates
-          {
-            // cout << "id: " << getExternalLabel(selectedNeighbors[idx]) <<
-            // endl;
-            auto back_nns =
-                &range_nns->at(this->getExternalLabel(selectedNeighbors[idx]));
-            auto temp_candidates(candidates);
-
-            std::vector<int> survive_nns;  // nns kept after pruning
-
-            while (!temp_candidates.empty()) {
-              auto temp_id = temp_candidates.top().second;
-              survive_nns.emplace_back(getExternalLabel(temp_id));
-              temp_candidates.pop();
-            }
-
-            for (unsigned ii = 0; ii < back_nns->size(); ii++) {
-              auto nn = &back_nns->at(ii);
-              if (nn->start == nn->end) {
-                if (std::find(survive_nns.begin(), survive_nns.end(), nn->id) ==
-                    survive_nns.end()) {
-                  // nn not survive
-                  nn->end = external_id;
-                }
-              }
-            }
-
-            // cur_c could be inserted
-            if (std::find(survive_nns.begin(), survive_nns.end(),
-                          external_id) != survive_nns.end()) {
-              // add external_id to nns (backward nn)
-              NeighborLifeCycle<dist_t> backward_nn(external_id, 0, external_id,
-                                                    external_id);
-              back_nns->emplace_back(backward_nn);
-            }
-          }
-
+          // TODO: add mutex to support parallel
+          // auto back_nns = &range_nns->at(selectedNeighbors[idx]);
+          auto back_nns =
+              &range_nns->at(this->getExternalLabel(selectedNeighbors[idx]));
+          getNeighborsByHeuristic2RecordPruned(candidates, Mcurmax, back_nns,
+                                               external_id);
           int indx = 0;
           while (candidates.size() > 0) {
             data[indx] = candidates.top().second;
@@ -239,20 +281,20 @@ class HalfBoundedHNSW : public HierarchicalNSW<float> {
 };
 
 template <typename dist_t>
-class HalfBoundedIndex : public BaseIndex {
+class IndexSegmentGraph1D : public BaseIndex {
  public:
-  vector<vector<NeighborLifeCycle<dist_t>>> indexed_arr;
+  vector<vector<SegmentNeighbor1D<dist_t>>> indexed_arr;
 
-  HalfBoundedIndex(delta_index_hnsw_full_reverse::SpaceInterface<dist_t> *s,
-                   const DataWrapper *data)
+  IndexSegmentGraph1D(base_hnsw::SpaceInterface<dist_t> *s,
+                      const DataWrapper *data)
       : BaseIndex(data) {
     fstdistfunc_ = s->get_dist_func();
     dist_func_param_ = s->get_dist_func_param();
     index_info = new IndexInfo();
-    index_info->index_version_type = "HalfBoundedIndex";
+    index_info->index_version_type = "IndexSegmentGraph1D";
   }
 
-  delta_index_hnsw_full_reverse::DISTFUNC<dist_t> fstdistfunc_;
+  base_hnsw::DISTFUNC<dist_t> fstdistfunc_;
   void *dist_func_param_;
 
   VisitedListPool *visited_list_pool_;
@@ -265,14 +307,12 @@ class HalfBoundedIndex : public BaseIndex {
 
     cout << "nns at position: " << pos << endl;
     for (auto nns : indexed_arr[pos]) {
-      cout << nns.id << "(" << nns.start << "," << nns.end << ")\n" << endl;
+      cout << nns.id << "->" << nns.end_id << ")\n" << endl;
     }
     cout << endl;
   }
 
-  void countNeighbrs() {
-    double batch_counter = 0;
-    double max_batch_counter = 0;
+  void countNeighbors() {
     if (!indexed_arr.empty())
       for (unsigned j = 0; j < indexed_arr.size(); j++) {
         int temp_size = 0;
@@ -284,7 +324,6 @@ class HalfBoundedIndex : public BaseIndex {
     if (isLog) {
       cout << "Avg. nn #: "
            << index_info->nodes_amount / (float)data_wrapper->data_size << endl;
-      batch_counter = 0;
     }
 
     index_info->avg_reverse_nns = 0;
@@ -293,12 +332,12 @@ class HalfBoundedIndex : public BaseIndex {
   void buildIndex(const IndexParams *index_params) override {
     cout << "Building Index using " << index_info->index_version_type << endl;
     timeval tt1, tt2;
-    visited_list_pool_ = new delta_index_hnsw_full_reverse::VisitedListPool(
-        1, data_wrapper->data_size);
+    visited_list_pool_ =
+        new base_hnsw::VisitedListPool(1, data_wrapper->data_size);
 
     // build HNSW
     L2Space space(data_wrapper->data_dim);
-    HalfBoundedHNSW<float> hnsw(
+    SegmentGraph1DHNSW<float> hnsw(
         *index_params, &space, 2 * data_wrapper->data_size, index_params->K,
         index_params->ef_construction, index_params->random_seed);
 
@@ -308,15 +347,34 @@ class HalfBoundedIndex : public BaseIndex {
     hnsw.range_nns = &indexed_arr;
 
     gettimeofday(&tt1, NULL);
-    // #pragma omp parallel for
+
+    // multi-thread also work, but not guaranteed as the paper
+    // may has minor recall decrement
+    // #pragma omp parallel for schedule(monotonic : dynamic)
     for (size_t i = 0; i < data_wrapper->data_size; ++i) {
+      // cout << i << endl;
       hnsw.addPoint(data_wrapper->nodes.at(i).data(), i);
     }
+
+    for (size_t i = 0; i < data_wrapper->data_size; ++i) {
+      // insert not pruned hnsw graph back
+      hnsw.get_linklist0(i);
+      linklistsizeint *ll_cur;
+      ll_cur = hnsw.get_linklist0(i);
+      size_t link_list_count = hnsw.getListCount(ll_cur);
+      tableint *data = (tableint *)(ll_cur + 1);
+
+      for (size_t j = 0; j < link_list_count; j++) {
+        int node_id = hnsw.getExternalLabel(data[j]);
+        SegmentNeighbor1D<dist_t> nn(node_id, 0, node_id);
+        indexed_arr.at(i).emplace_back(nn);
+      }
+    }
+    logTime(tt1, tt2, "Construct Time");
     gettimeofday(&tt2, NULL);
     index_info->index_time = CountTime(tt1, tt2);
-
     // count neighbors number
-    countNeighbrs();
+    countNeighbors();
 
     if (index_params->print_one_batch) {
       printOnebatch();
@@ -328,44 +386,39 @@ class HalfBoundedIndex : public BaseIndex {
       const SearchParams *search_params, SearchInfo *search_info,
       const vector<float> &query,
       const std::pair<int, int> query_bound) override {
-    timeval tt1, tt2, tt3, tt4;
+    // timeval tt1, tt2;
+    timeval tt3, tt4;
 
     VisitedList *vl = visited_list_pool_->getFreeVisitedList();
     vl_type *visited_array = vl->mass;
     vl_type visited_array_tag = vl->curV;
-    float lower_bound = INT_MAX;
+    float lower_bound = std::numeric_limits<float>::max();
     std::priority_queue<pair<float, int>> top_candidates;
     std::priority_queue<pair<float, int>> candidate_set;
 
-    const int data_size = data_wrapper->data_size;
-    const int two_batch_threshold =
-        data_size * search_params->control_batch_threshold;
     search_info->total_comparison = 0;
     search_info->internal_search_time = 0;
     search_info->cal_dist_time = 0;
     search_info->fetch_nns_time = 0;
     num_search_comparison = 0;
-    // finding enters
+    gettimeofday(&tt3, NULL);
+
+    // three enters, SeRF disgard the hierarchical structure of HNSW
     vector<int> enter_list;
     {
       int lbound = query_bound.first;
       int interval = (query_bound.second - lbound) / 3;
       for (size_t i = 0; i < 3; i++) {
         int point = lbound + interval * i;
-        float dist = EuclideanDistance(data_wrapper->nodes[point], query);
+        float dist = fstdistfunc_(
+            query.data(), data_wrapper->nodes[point].data(), dist_func_param_);
         candidate_set.push(make_pair(-dist, point));
         enter_list.emplace_back(point);
         visited_array[point] = visited_array_tag;
       }
     }
-    gettimeofday(&tt3, NULL);
 
-    // 只有一个enter
-    // float dist_enter = EuclideanDistance(data_nodes[l_bound], query);
-    // candidate_set.push(make_pair(-dist_enter, l_bound));
-    // TODO: How to find proper enters.
-
-    size_t hop_counter = 0;
+    // size_t hop_counter = 0;
 
     while (!candidate_set.empty()) {
       std::pair<float, int> current_node_pair = candidate_set.top();
@@ -380,28 +433,16 @@ class HalfBoundedIndex : public BaseIndex {
            << -current_node_pair.first << endl;
 #endif
 
-      // if (search_info->is_investigate) {
-      //   search_info->SavePathInvestigate(current_node_pair.second,
-      //                                    -current_node_pair.first,
-      //                                    hop_counter, num_search_comparison);
-      // }
-      hop_counter++;
+      // hop_counter++;
       candidate_set.pop();
-
-      // search cw on the fly
-      // vector<int> current_neighbors;
-      // current_neighbors = decompressDeltaPath(
-      //     indexed_arr[current_node_id], 0, query_bound.second,
-      //     current_node_id);
-
       auto neighbor_it = indexed_arr.at(current_node_id).begin();
 
-      gettimeofday(&tt1, NULL);
+      // gettimeofday(&tt1, NULL);
 
       while (neighbor_it != indexed_arr[current_node_id].end()) {
         if ((neighbor_it->id < query_bound.second) &&
-            (neighbor_it->end == neighbor_it->start ||
-             neighbor_it->end >= query_bound.second)) {
+            (neighbor_it->end_id == neighbor_it->id ||
+             neighbor_it->end_id >= query_bound.second)) {
           int candidate_id = neighbor_it->id;
 
           if (!(visited_array[candidate_id] == visited_array_tag)) {
@@ -426,8 +467,8 @@ class HalfBoundedIndex : public BaseIndex {
         }
         neighbor_it++;
       }
-      gettimeofday(&tt2, NULL);
-      AccumulateTime(tt1, tt2, search_info->cal_dist_time);
+      // gettimeofday(&tt2, NULL);
+      // AccumulateTime(tt1, tt2, search_info->cal_dist_time);
     }
 
     vector<int> res;
@@ -460,16 +501,16 @@ class HalfBoundedIndex : public BaseIndex {
       const SearchParams *search_params, SearchInfo *search_info,
       const vector<float> &query,
       const std::pair<int, int> query_bound) override {
-    timeval tt1, tt2, tt3, tt4;
+    // timeval tt1, tt2;
+    timeval tt3, tt4;
 
     VisitedList *vl = visited_list_pool_->getFreeVisitedList();
     vl_type *visited_array = vl->mass;
     vl_type visited_array_tag = vl->curV;
-    float lower_bound = INT_MAX;
+    float lower_bound = std::numeric_limits<float>::max();
     std::priority_queue<pair<float, int>> top_candidates;
     std::priority_queue<pair<float, int>> candidate_set;
 
-    const int data_size = data_wrapper->data_size;
     search_info->total_comparison = 0;
     search_info->internal_search_time = 0;
     search_info->cal_dist_time = 0;
@@ -482,7 +523,8 @@ class HalfBoundedIndex : public BaseIndex {
       int interval = (query_bound.second - lbound) / 3;
       for (size_t i = 0; i < 3; i++) {
         int point = lbound + interval * i;
-        float dist = EuclideanDistance(data_wrapper->nodes[point], query);
+        float dist = fstdistfunc_(
+            query.data(), data_wrapper->nodes[point].data(), dist_func_param_);
         candidate_set.push(make_pair(-dist, point));
         enter_list.emplace_back(point);
         visited_array[point] = visited_array_tag;
@@ -490,26 +532,21 @@ class HalfBoundedIndex : public BaseIndex {
     }
     gettimeofday(&tt3, NULL);
 
-    size_t hop_counter = 0;
+    // size_t hop_counter = 0;
 
     while (!candidate_set.empty()) {
       std::pair<float, int> current_node_pair = candidate_set.top();
       int current_node_id = current_node_pair.second;
-
       if (-current_node_pair.first > lower_bound) {
         break;
       }
-      // if (search_info->is_investigate) {
-      //   search_info->SavePathInvestigate(current_node_pair.second,
-      //                                    -current_node_pair.first,
-      //                                    hop_counter, num_search_comparison);
-      // }
-      hop_counter++;
+
+      // hop_counter++;
 
       candidate_set.pop();
 
       auto neighbor_it = indexed_arr.at(current_node_id).begin();
-      gettimeofday(&tt1, NULL);
+      // gettimeofday(&tt1, NULL);
 
       while (neighbor_it != indexed_arr[current_node_id].end()) {
         if ((neighbor_it->id < query_bound.second)) {
@@ -542,8 +579,8 @@ class HalfBoundedIndex : public BaseIndex {
         neighbor_it++;
       }
 
-      gettimeofday(&tt2, NULL);
-      AccumulateTime(tt1, tt2, search_info->cal_dist_time);
+      // gettimeofday(&tt2, NULL);
+      // AccumulateTime(tt1, tt2, search_info->cal_dist_time);
     }
 
     vector<int> res;
@@ -570,11 +607,16 @@ class HalfBoundedIndex : public BaseIndex {
     return res;
   }
 
-  ~HalfBoundedIndex() {
+  // TODO: save and load segment graph 1d
+  void save(const string &save_path) {}
+
+  void load(const string &load_path) {}
+
+  ~IndexSegmentGraph1D() {
     delete index_info;
     indexed_arr.clear();
     delete visited_list_pool_;
   }
 };
 
-}  // namespace halfrangeindex
+}  // namespace SeRF

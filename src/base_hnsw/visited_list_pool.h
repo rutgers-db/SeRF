@@ -4,7 +4,7 @@
 
 #include <mutex>
 
-namespace delta_index_hnsw_full_reverse {
+namespace base_hnsw {
 typedef unsigned short int vl_type;
 
 class VisitedList {

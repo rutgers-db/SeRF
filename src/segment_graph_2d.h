@@ -2,39 +2,60 @@
  * @file index_recursion_batch.h
  * @author Chaoji Zuo (chaoji.zuo@rutgers.edu)
  * @brief Index for arbitrary range filtering search
- * Search more neighbors and insert them into the graph
- * @date 2023-06-19
+ * Compress N SegmentGraph
+ * @date 2023-06-19; Revised 2024-01-10
  *
  * @copyright Copyright (c) 2023
  */
 
 #include <algorithm>
+#include <boost/functional/hash.hpp>
 #include <ctime>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <queue>
 #include <vector>
 
-#include "base_struct.h"
+#include "base_hnsw/hnswalg.h"
+#include "base_hnsw/hnswlib.h"
 #include "data_wrapper.h"
-#include "delta_base_hnsw/hnswalg.h"
-#include "delta_base_hnsw/hnswlib.h"
-#include "range_index_base.h"
+#include "index_base.h"
 #include "utils.h"
 
-using namespace delta_index_hnsw_full_reverse;
-#define INT_MAX __INT_MAX__
+using namespace base_hnsw;
 
-namespace rangeindex {
+namespace SeRF {
+
+struct OneSegmentNeighbors {
+  OneSegmentNeighbors() { batch = 0; }
+  OneSegmentNeighbors(unsigned num) : batch(num) {}
+  OneSegmentNeighbors(unsigned num, int start, int end)
+      : batch(num), start(start), end(end) {}
+
+  // vector<pair<int, float>> nns;
+  vector<int> nns_id;
+  unsigned batch;  // batch id
+  int start = -1;  // left position
+  int end = -2;    // right position
+  const unsigned size() const { return nns_id.size(); }
+};
+
+// struct OneTupleNeighbor {
+//   int start = -1;
+//   int end = -2;
+//   int nn_id;
+// }
+
+struct DirectedSegNeighbors {
+  vector<OneSegmentNeighbors> forward_nns;
+  vector<int> reverse_nns;
+};
 
 template <typename dist_t>
-class RangeFilteringHNSW : public HierarchicalNSW<float> {
+class SegmentGraph2DHNSW : public HierarchicalNSW<float> {
  public:
-  RangeFilteringHNSW(SpaceInterface<float> *s, size_t max_elements,
-                     size_t M = 16, size_t ef_construction = 200,
-                     size_t random_seed = 100)
-      : HierarchicalNSW(s, max_elements, M, ef_construction, random_seed){};
-  RangeFilteringHNSW(const BaseIndex::IndexParams &index_params,
+  SegmentGraph2DHNSW(const BaseIndex::IndexParams &index_params,
                      SpaceInterface<float> *s, size_t max_elements,
                      size_t M = 16, size_t ef_construction = 200,
                      size_t random_seed = 100)
@@ -45,228 +66,302 @@ class RangeFilteringHNSW : public HierarchicalNSW<float> {
   }
 
   const BaseIndex::IndexParams *params;
-  vector<vector<pair<int, float>>> reverse_nns_vecs;
+  vector<DirectedSegNeighbors> *segment_graph;
 
-  // rewrite heuristic pruning for supporting ef_for_pruning
-  void getNeighborsByHeuristic2LimitSize(
-      std::priority_queue<std::pair<dist_t, tableint>,
-                          std::vector<std::pair<dist_t, tableint>>,
-                          CompareByFirst> &top_candidates,
-      const size_t M) {
-    if (top_candidates.size() < M) {
-      return;
-    }
-    // top_candidates should contain ef_max_ nns.
+  // Rewrite the searching while construting HNSW, keep more neighbors.
+  // TODO: maybe can be updated to a position sensing functions.
+  // or combine with rnn-descent
+  virtual std::priority_queue<std::pair<dist_t, tableint>,
+                              std::vector<std::pair<dist_t, tableint>>,
+                              CompareByFirst>
+  searchBaseLayerLevel0(tableint ep_id, const void *data_point, int layer) {
+    VisitedList *vl = visited_list_pool_->getFreeVisitedList();
+    vl_type *visited_array = vl->mass;
+    vl_type visited_array_tag = vl->curV;
 
-    // pop out far nodes
-    while (top_candidates.size() >
-           params->ef_large_for_pruning) {  // or ef_basic_construction?
-      top_candidates.pop();
-    }
-    std::priority_queue<std::pair<dist_t, tableint>> queue_closest;
-    std::vector<std::pair<dist_t, tableint>> return_list;
-    while (top_candidates.size() > 0) {
-      queue_closest.emplace(-top_candidates.top().first,
-                            top_candidates.top().second);
-      top_candidates.pop();
-      // if (queue_closest.size() >
-      //     ef_for_pruning_) {  // or ef_basic_construction?
-      //   break;
-      // }
-    }
     std::priority_queue<std::pair<dist_t, tableint>,
                         std::vector<std::pair<dist_t, tableint>>,
                         CompareByFirst>
-        empty_q;
-    top_candidates.swap(empty_q);
+        top_candidates;
+    std::priority_queue<std::pair<dist_t, tableint>,
+                        std::vector<std::pair<dist_t, tableint>>,
+                        CompareByFirst>
+        candidateSet;
 
-    while (queue_closest.size()) {
-      if (return_list.size() >= M) break;
-      std::pair<dist_t, tableint> curent_pair = queue_closest.top();
-      dist_t dist_to_query = -curent_pair.first;
-      queue_closest.pop();
-      bool good = true;
+    std::vector<pair<dist_t, tableint>> deleted_list;
 
-      for (std::pair<dist_t, tableint> second_pair : return_list) {
-        dist_t curdist = fstdistfunc_(getDataByInternalId(second_pair.second),
-                                      getDataByInternalId(curent_pair.second),
-                                      dist_func_param_);
-        ;
-        if (curdist < dist_to_query) {
-          good = false;
-          break;
+    size_t ef_construction = ef_max_;
+
+    dist_t lowerBound;
+    if (!isMarkedDeleted(ep_id)) {
+      dist_t dist = fstdistfunc_(data_point, getDataByInternalId(ep_id),
+                                 dist_func_param_);
+      top_candidates.emplace(dist, ep_id);
+      lowerBound = dist;
+      candidateSet.emplace(-dist, ep_id);
+    } else {
+      lowerBound = std::numeric_limits<dist_t>::max();
+      candidateSet.emplace(-lowerBound, ep_id);
+    }
+    visited_array[ep_id] = visited_array_tag;
+
+    while (!candidateSet.empty()) {
+      std::pair<dist_t, tableint> curr_el_pair = candidateSet.top();
+      if ((-curr_el_pair.first) > lowerBound) {
+        break;
+      }
+      candidateSet.pop();
+
+      tableint curNodeNum = curr_el_pair.second;
+
+      std::unique_lock<std::mutex> lock(link_list_locks_[curNodeNum]);
+
+      int *data;  // = (int *)(linkList0_ + curNodeNum *
+                  // size_links_per_element0_);
+      if (layer == 0) {
+        data = (int *)get_linklist0(curNodeNum);
+      } else {
+        data = (int *)get_linklist(curNodeNum, layer);
+        //                    data = (int *) (linkLists_[curNodeNum] + (layer
+        //                    - 1) * size_links_per_element_);
+      }
+      size_t size = getListCount((linklistsizeint *)data);
+      tableint *datal = (tableint *)(data + 1);
+#ifdef USE_SSE
+      _mm_prefetch((char *)(visited_array + *(data + 1)), _MM_HINT_T0);
+      _mm_prefetch((char *)(visited_array + *(data + 1) + 64), _MM_HINT_T0);
+      _mm_prefetch(getDataByInternalId(*datal), _MM_HINT_T0);
+      _mm_prefetch(getDataByInternalId(*(datal + 1)), _MM_HINT_T0);
+#endif
+
+      for (size_t j = 0; j < size; j++) {
+        tableint candidate_id = *(datal + j);
+//                    if (candidate_id == 0) continue;
+#ifdef USE_SSE
+        _mm_prefetch((char *)(visited_array + *(datal + j + 1)), _MM_HINT_T0);
+        _mm_prefetch(getDataByInternalId(*(datal + j + 1)), _MM_HINT_T0);
+#endif
+        if (visited_array[candidate_id] == visited_array_tag) continue;
+        visited_array[candidate_id] = visited_array_tag;
+        char *currObj1 = (getDataByInternalId(candidate_id));
+
+        dist_t dist1 = fstdistfunc_(data_point, currObj1, dist_func_param_);
+        if (top_candidates.size() < ef_construction || lowerBound > dist1) {
+          candidateSet.emplace(-dist1, candidate_id);
+#ifdef USE_SSE
+          _mm_prefetch(getDataByInternalId(candidateSet.top().second),
+                       _MM_HINT_T0);
+#endif
+
+          if (!isMarkedDeleted(candidate_id))
+            top_candidates.emplace(dist1, candidate_id);
+
+          // record deleted neighbors
+          if (top_candidates.size() > ef_construction) {
+            deleted_list.emplace_back(top_candidates.top());
+            top_candidates.pop();
+          }
+
+          if (!top_candidates.empty()) lowerBound = top_candidates.top().first;
         }
       }
-      if (good) {
-        return_list.push_back(curent_pair);
-      }
+    }
+    visited_list_pool_->releaseVisitedList(vl);
+
+    // add back deleted neighbors for recursively pruning
+    for (auto deleted_candidate : deleted_list) {
+      top_candidates.emplace(deleted_candidate);
     }
 
-    for (std::pair<dist_t, tableint> curent_pair : return_list) {
-      top_candidates.emplace(-curent_pair.first, curent_pair.second);
-    }
+    return top_candidates;
   }
 
-  // rewrite connect new element
+  // rewrite connect new element, integrate recursively heuristic pruning
   virtual tableint mutuallyConnectNewElementLevel0(
       const void *data_point, tableint cur_c,
       std::priority_queue<std::pair<dist_t, tableint>,
                           std::vector<std::pair<dist_t, tableint>>,
                           CompareByFirst> &top_candidates,
       int level, bool isUpdate) {
-    // recursive add
-    std::priority_queue<std::pair<dist_t, tableint>,
-                        std::vector<std::pair<dist_t, tableint>>,
-                        CompareByFirst>
-        before_prune_cancidates(top_candidates);
-    std::unordered_set<tableint> selectedNeighbors_set;
-    selectedNeighbors_set.reserve(M_);
-
-    size_t Mcurmax = level ? maxM_ : maxM0_;
-
-    getNeighborsByHeuristic2LimitSize(top_candidates, M_);
-    if (top_candidates.size() > M_)
-      throw std::runtime_error(
-          "Should be not be more than M_ candidates returned by the "
-          "heuristic");
+    size_t Mcurmax = maxM0_;
 
     // forward neighbors in top candidates
     int external_id = getExternalLabel(cur_c);
-    auto nns = &directed_nns->at(external_id);
+    tableint next_closest_entry_point = 0;
 
-    // lifecycle
-    OneBatchNeighbors batchNN(0);
-
-    // record left most position;
-    int external_left_most = -1;
-    vector<int> addedNeighborPositions;
-
+    // original structure for fetching nodes
     std::vector<tableint> selectedNeighbors;
     selectedNeighbors.reserve(M_);
-    while (top_candidates.size() > 0) {
-      selectedNeighbors.push_back(top_candidates.top().second);
+    {
+      // MAX_POS recursive pruning, combining into connect function.
 
-      selectedNeighbors_set.emplace(top_candidates.top().second);
-
-      int external_nn = getExternalLabel(selectedNeighbors.back());
-
-      batchNN.nns.emplace_back(
-          make_pair(external_nn, top_candidates.top().first));
-      // nns->forward_nns.emplace_back(
-      //     make_pair(external_nn, top_candidates.top().first));
-
-      top_candidates.pop();
-
-      addedNeighborPositions.emplace_back(external_nn);  // for recursive
-    }
-    tableint next_closest_entry_point = selectedNeighbors.back();
-
-    nns->forward_nns.emplace_back(batchNN);
-
-    // for recursively add left points
-    int recursion_counter = 0;
-
-    vector<tableint> extend_selectedNeighbors(selectedNeighbors);
-
-    // Recursive Add
-    while (((recursion_counter++ < 100) && (!addedNeighborPositions.empty()))) {
-      selectedNeighbors_set.reserve(selectedNeighbors_set.size() + M_);
-      extend_selectedNeighbors.reserve(extend_selectedNeighbors.size() + M_);
-      // re prune left candidates
-      std::priority_queue<std::pair<dist_t, tableint>,
-                          std::vector<std::pair<dist_t, tableint>>,
-                          CompareByFirst>
-          leftover_candidates;
-
-      sort(addedNeighborPositions.begin(), addedNeighborPositions.end());
-
-      switch (params->recursion_type) {
-        case BaseIndex::IndexParams::Recursion_Type_t::MIN_POS:
-          external_left_most = addedNeighborPositions.front();
-          break;
-        case BaseIndex::IndexParams::Recursion_Type_t::MID_POS:
-          external_left_most =
-              addedNeighborPositions[addedNeighborPositions.size() / 2];
-          break;
-        case BaseIndex::IndexParams::Recursion_Type_t::MAX_POS:
-          external_left_most = addedNeighborPositions.back();
-          break;
-        case BaseIndex::IndexParams::Recursion_Type_t::SMALL_LEFT_POS:
-          external_left_most = before_prune_cancidates.top().second;
+      // reverse top_candidates, from cloest to farthest
+      std::priority_queue<std::pair<dist_t, tableint>> queue_closest;
+      while (top_candidates.size() > 0) {
+        queue_closest.emplace(-top_candidates.top().first,
+                              top_candidates.top().second);
+        top_candidates.pop();
       }
-      // external_left_most to find the position;
-      // external_left_most = addedNeighborPositions.front();
-      // left most
-      // left - right- most
-      // middle
-      // external_left_most =
-      // addedNeighborPositions[addedNeighborPositions.size() / 2];
+      // Now top_candidates is empty
 
-      while (!before_prune_cancidates.empty()) {
-        int external_nn =
-            getExternalLabel(before_prune_cancidates.top().second);
-        if (external_nn > external_left_most) {
-          leftover_candidates.push(before_prune_cancidates.top());
+      int external_left_most = -1;
+      int last_batch_left_most = -1;
+
+      unsigned iter_counter = 0;
+      unsigned batch_counter = 0;
+      std::vector<std::pair<dist_t, tableint>> return_list;
+      std::vector<int> return_external_list;
+
+      // Need a buffer candidates to store neighbors (external_id, dist_t,
+      // internal_id)
+      vector<pair<int, pair<dist_t, tableint>>> buffer_candidates;
+
+      using tableint_pair = std::pair<tableint, tableint>;
+      std::unordered_map<tableint_pair, dist_t, boost::hash<tableint_pair>>
+          visited_nn_dists;
+
+      while (queue_closest.size()) {
+        // If return list size meet M or current window exceed ef_construction,
+        // end this batch, enter the new batch
+        if (return_list.size() >= Mcurmax ||
+            iter_counter >= ef_basic_construction_) {
+          // reset batch, add current batch;
+          // no breaking because recursivly visiting the candidates.
+
+          if (batch_counter == 0) {
+            // The first batch, also use for original HNSW constructing
+            next_closest_entry_point =
+                return_list.front()
+                    .second;  // TODO: check whether the nearest neighbor
+            for (std::pair<dist_t, tableint> curent_pair : return_list) {
+              selectedNeighbors.push_back(curent_pair.second);
+            }
+          }
+
+          // TODO: For MID_POS and MIN_POS, find the external_left_most by
+          // sorting.
+          // const auto [min_pos, max_pos] = std::minmax_element(
+          //     std::begin(return_external_list),
+          //     std::end(return_external_list));
+          // assert(*max_pos == external_left_most);
+          // OneSegmentNeighbors one_segment(batch_counter, *min_pos, *max_pos);
+
+          for (pair<int, pair<dist_t, tableint>> curent_buffer :
+               buffer_candidates) {
+            if (curent_buffer.first > external_left_most) {
+              // available in next batch, add back to the queue.
+              queue_closest.emplace(curent_buffer.second);
+            }
+          }
+
+          // current segment start position: [last left + 1, current most]
+          OneSegmentNeighbors one_segment(
+              batch_counter, last_batch_left_most + 1, external_left_most);
+
+          // for (size_t p_idx = 0; p_idx < return_list.size(); p_idx++) {
+          //   // keep dists
+          //   // one_segment.nns.emplace_back(return_external_list.at(p_idx),
+          //   //                              -return_list.at(p_idx).first);
+          // }
+          // only keep id, drop dists
+          one_segment.nns_id.swap(return_external_list);
+          segment_graph->at(external_id).forward_nns.emplace_back(one_segment);
+
+          return_list.clear();
+          return_external_list.clear();
+          iter_counter = 0;
+          batch_counter++;
+          last_batch_left_most = external_left_most;
         }
-        before_prune_cancidates.pop();
-      }
 
-      if (leftover_candidates.empty()) {
-        // no more leftover elements, break
-        // too much candidates, break
-        break;
-      }
-
-      before_prune_cancidates = leftover_candidates;
-
-      getNeighborsByHeuristic2LimitSize(leftover_candidates, M_);
-
-      // record added neighbor to find the position
-      addedNeighborPositions.clear();
-      OneBatchNeighbors batchNN2(recursion_counter + 1);
-
-      while (!leftover_candidates.empty()) {
-        // successfully insert (no duplicate)?
-        // do we need this for recursion methods?
-        // if (selectedNeighbors_set.emplace(leftover_candidates.top().second)
-        //         .second) {
-        //   extend_selectedNeighbors.emplace_back(
-        //       leftover_candidates.top().second);
-        //   int external_nn =
-        //   getExternalLabel(extend_selectedNeighbors.back());
-
-        //   batchNN2.nns.emplace_back(
-        //       make_pair(external_nn, leftover_candidates.top().first));
-        //   // nns->forward_nns.emplace_back(
-        //   //     make_pair(external_nn, leftover_candidates.top().first));
-        //   addedNeighborPositions.emplace_back(external_nn);
+        // experimets show that this doesn't matter a lot
+        // if queue smaller than Mcurmax, add all
+        // if ((return_list.size() + queue_closest.size()) < Mcurmax) {
+        //   while (queue_closest.size()) {
+        //     std::pair<dist_t, tableint> curent_pair = queue_closest.top();
+        //     int curent_external_id = getExternalLabel(curent_pair.second);
+        //     queue_closest.pop();
+        //     if (curent_external_id > external_left_most) {
+        //       return_list.push_back(curent_pair);
+        //       return_external_list.push_back(curent_external_id);
+        //     }
+        //   }
+        //   break;
         // }
 
-        // allow duplicate
+        std::pair<dist_t, tableint> curent_pair = queue_closest.top();
+        dist_t dist_to_query = -curent_pair.first;
+        queue_closest.pop();
 
-        {
-          int external_nn = getExternalLabel(leftover_candidates.top().second);
-          batchNN2.nns.emplace_back(
-              make_pair(external_nn, leftover_candidates.top().first));
-          addedNeighborPositions.emplace_back(external_nn);
+        int curent_external_id = getExternalLabel(curent_pair.second);
+        if (curent_external_id < last_batch_left_most) {
+          // position left than last batch, skip
+          continue;
         }
+        iter_counter++;
+        bool good = true;
 
-        leftover_candidates.pop();
+        for (std::pair<dist_t, tableint> second_pair : return_list) {
+          dist_t curdist = fstdistfunc_(getDataByInternalId(second_pair.second),
+                                        getDataByInternalId(curent_pair.second),
+                                        dist_func_param_);
+
+          // use a map structure to record the distances, maybe can boost
+          // MID_POS and MIN_POS
+          // dist_t curdist; tableint_pair nn_pair =
+          //     std::make_pair(std::min(second_pair.second,
+          //     curent_pair.second),
+          //                    std::max(second_pair.second,
+          //                    curent_pair.second));
+          // if (visited_nn_dists.count(nn_pair)) {
+          //   curdist = visited_nn_dists.at(nn_pair);
+          // } else {
+          //   curdist = fstdistfunc_(getDataByInternalId(second_pair.second),
+          //                          getDataByInternalId(curent_pair.second),
+          //                          dist_func_param_);
+          //   visited_nn_dists.insert({nn_pair, curdist});
+          // }
+
+          if (curdist < dist_to_query) {
+            good = false;
+            break;
+          }
+        }
+        if (good) {
+          return_list.push_back(curent_pair);
+          return_external_list.push_back(curent_external_id);
+          if (curent_external_id > external_left_most) {
+            external_left_most = curent_external_id;
+          }
+        } else {
+          // decide whether add to buffer list, TODO: consider MIN_POS, MID_POS
+          if (curent_external_id > external_left_most) {
+            buffer_candidates.emplace_back(
+                make_pair(curent_external_id, curent_pair));
+          }
+        }
       }
 
-      batchNN2.start =
-          external_left_most + 1;  // the nns id in the batch >= start position
-      // record end position of last one
-      nns->forward_nns.back().end = external_left_most;
-      nns->forward_nns.emplace_back(batchNN2);
+      if (batch_counter == 0) {
+        // The first batch, also use for original HNSW constructing
+        next_closest_entry_point = return_list.front().second;
+        for (std::pair<dist_t, tableint> curent_pair : return_list) {
+          selectedNeighbors.push_back(curent_pair.second);
+        }
+      }
+      if (!return_list.empty()) {
+        OneSegmentNeighbors one_segment(batch_counter, last_batch_left_most + 1,
+                                        external_id);
+        // for (size_t p_idx = 0; p_idx < return_list.size(); p_idx++) {
+        //   // keep dists
+        //   // one_segment.nns.emplace_back(return_external_list.at(p_idx),
+        //   //                              -return_list.at(p_idx).first);
+        // }
+        // only keep id, drop dists
+        one_segment.nns_id.swap(return_external_list);
+        segment_graph->at(external_id).forward_nns.emplace_back(one_segment);
+      }
     }
-
-    // // sort forward_nns, for binary search during query
-    // std::sort(nns->forward_nns.begin(), nns->forward_nns.end(),
-    //           [](std::pair<int, float> const &left,
-    //              std::pair<int, float> const &right) {
-    //             return left.first < right.first;
-    //           });
 
     {
       linklistsizeint *ll_cur;
@@ -318,15 +413,6 @@ class RangeFilteringHNSW : public HierarchicalNSW<float> {
         }
       }
 
-      // move from below to here for store dist in directed_nns.
-      // dist_t d_max = fstdistfunc_(getDataByInternalId(cur_c),
-      //                             getDataByInternalId(selectedNeighbors[idx]),
-      //                             dist_func_param_);
-      // add external_id to nns (backward nn)
-      // int external_backward_id = getExternalLabel(selectedNeighbors[idx]);
-      // directed_nns->at(external_backward_id)
-      //     .reverse_nns.emplace_back(make_pair(external_id, d_max));
-
       // If cur_c is already present in the neighboring connections of
       // `selectedNeighbors[idx]` then no need to modify any connections or
       // run the heuristics.
@@ -334,13 +420,6 @@ class RangeFilteringHNSW : public HierarchicalNSW<float> {
         if (sz_link_list_other < Mcurmax) {
           data[sz_link_list_other] = cur_c;
           setListCount(ll_other, sz_link_list_other + 1);
-
-          // // add external_id to nns (backward nn)
-          // int external_backward_id =
-          // getExternalLabel(selectedNeighbors[idx]);
-
-          // directed_nns->at(external_backward_id)
-          //     .reverse_nns.emplace_back(external_backward_id);
 
         } else {
           // finding the "weakest" element to replace it with the new one
@@ -372,70 +451,70 @@ class RangeFilteringHNSW : public HierarchicalNSW<float> {
           }
           setListCount(ll_other, indx);
           // Nearest K:
-          /*int indx = -1;
-          for (int j = 0; j < sz_link_list_other; j++) {
-              dist_t d = fstdistfunc_(getDataByInternalId(data[j]),
-          getDataByInternalId(rez[idx]), dist_func_param_); if (d > d_max) {
-                  indx = j;
-                  d_max = d;
-              }
-          }
-          if (indx >= 0) {
-              data[indx] = cur_c;
-          } */
+          // int indx = -1;
+          // for (int j = 0; j < sz_link_list_other; j++) {
+          //     dist_t d = fstdistfunc_(getDataByInternalId(data[j]),
+          // getDataByInternalId(rez[idx]), dist_func_param_); if (d > d_max) {
+          //         indx = j;
+          //         d_max = d;
+          //     }
+          // }
+          // if (indx >= 0) {
+          //     data[indx] = cur_c;
+          // }
         }
       }
     }
 
-    // add reverse nns
-    for (auto &batch : nns->forward_nns) {
-      if (batch.nns.empty()) {
-        continue;
-      }
+    // Update: integrate this step in processing reverse edges.
+    // just add reverse nns, no pruning, no processing
+    // for (auto &batch : segment_graph->at(external_id).forward_nns) {
+    //   if (batch.nns.empty()) {
+    //     continue;
+    //   }
 
-      for (auto nn : batch.nns) {
-        reverse_nns_vecs.at(nn.first).emplace_back(
-            make_pair(external_id, nn.second));
-        batch.nns_id.emplace_back(nn.first);
-      }
-    }
+    //   for (auto nn : batch.nns) {
+    //     // reverse_nns_vecs.at(nn.first).emplace_back(
+    //     //     make_pair(external_id, nn.second));
+    //     batch.nns_id.emplace_back(nn.first);  // TODO: put this during
+    //     pruning
+    //   }
+    // }
 
     return next_closest_entry_point;
   }
 };
 
-class RecursionIndex : public BaseIndex {
+class IndexSegmentGraph2D : public BaseIndex {
  public:
-  vector<DirectedNeighbors> directed_indexed_arr;
+  vector<DirectedSegNeighbors> directed_indexed_arr;
 
-  RecursionIndex(delta_index_hnsw_full_reverse::SpaceInterface<float> *s,
-                 const DataWrapper *data)
+  IndexSegmentGraph2D(base_hnsw::SpaceInterface<float> *s,
+                      const DataWrapper *data)
       : BaseIndex(data) {
     fstdistfunc_ = s->get_dist_func();
     dist_func_param_ = s->get_dist_func_param();
     index_info = new IndexInfo();
-    index_info->index_version_type = "BaseRecursionIndex";
+    index_info->index_version_type = "IndexSegmentGraph2D";
   }
-  delta_index_hnsw_full_reverse::DISTFUNC<float> fstdistfunc_;
+  base_hnsw::DISTFUNC<float> fstdistfunc_;
   void *dist_func_param_;
 
   VisitedListPool *visited_list_pool_;
   IndexInfo *index_info;
+  const BaseIndex::IndexParams *index_params_;
 
-  // do pruning all sth else. In this base version, just no prune and collect
-  // all reverse neighbor in one batch.
-  void processReverseNeighbors(RangeFilteringHNSW<float> &hnsw) {
+  // connect reverse neighbors, do pruning all sth else. In this base version,
+  // just no prune and collect all reverse neighbor in one batch.
+  void processReverseNeighbors(SegmentGraph2DHNSW<float> &hnsw) {
     for (size_t i = 0; i < data_wrapper->data_size; ++i) {
-      auto before_pruning_candidates = hnsw.reverse_nns_vecs.at(i);
-      size_t batch_counter = 0;
-      {
-        OneBatchNeighbors batchNN(batch_counter);
-        for (auto nn : before_pruning_candidates) {
-          batchNN.nns_id.emplace_back(nn.first);
+      for (auto batch : this->directed_indexed_arr.at(i).forward_nns) {
+        for (auto nn : batch.nns_id) {
+          // add reverse edge
+          // this->directed_indexed_arr.at(nn).reverse_nns.emplace_back(i);
+          this->directed_indexed_arr.at(nn).reverse_nns.insert(
+              this->directed_indexed_arr.at(nn).reverse_nns.begin(), i);
         }
-        batchNN.start = i;
-        batchNN.end = data_wrapper->data_size;
-        directed_indexed_arr.at(i).reverse_nns.emplace_back(batchNN);
       }
     }
   }
@@ -450,19 +529,25 @@ class RecursionIndex : public BaseIndex {
     }
     cout << endl;
 
-    for (auto nns :
-         directed_indexed_arr[data_wrapper->data_size / 2].reverse_nns) {
-      cout << "Reverse batch: " << nns.batch << "(" << nns.start << ","
-           << nns.end << ")" << endl;
-      print_set(nns.nns_id);
-      cout << endl;
-    }
+    // for (auto nns :
+    //      directed_indexed_arr[data_wrapper->data_size / 2].reverse_nns) {
+    //   cout << "Reverse batch: " << nns.batch << "(" << nns.start << ","
+    //        << nns.end << ")" << endl;
+    //   print_set(nns.nns_id);
+    //   cout << endl;
+    // }
+
+    cout << "Reverse batch: " << endl;
+    print_set(directed_indexed_arr[data_wrapper->data_size / 2].reverse_nns);
+    cout << endl;
+
     cout << endl;
   }
 
   void countNeighbrs() {
     double batch_counter = 0;
     double max_batch_counter = 0;
+    size_t max_reverse_nn = 0;
     if (!directed_indexed_arr.empty())
       for (unsigned j = 0; j < directed_indexed_arr.size(); j++) {
         int temp_size = 0;
@@ -486,12 +571,10 @@ class RecursionIndex : public BaseIndex {
     int reverse_node_amount = 0;
     if (!directed_indexed_arr.empty()) {
       for (unsigned j = 0; j < directed_indexed_arr.size(); j++) {
-        int temp_size = 0;
-        for (auto nns : directed_indexed_arr[j].reverse_nns) {
-          temp_size += nns.nns_id.size();
-        }
-        reverse_node_amount += temp_size;
-        batch_counter += directed_indexed_arr[j].reverse_nns.size();
+        reverse_node_amount += directed_indexed_arr[j].reverse_nns.size();
+        batch_counter += 1;
+        max_reverse_nn = std::max(max_reverse_nn,
+                                  directed_indexed_arr[j].reverse_nns.size());
       }
     }
 
@@ -499,6 +582,7 @@ class RecursionIndex : public BaseIndex {
     index_info->avg_reverse_nns =
         reverse_node_amount / (float)data_wrapper->data_size;
     if (isLog) {
+      cout << "Max. reverse nn #: " << max_reverse_nn << endl;
       cout << "Avg. reverse nn #: "
            << reverse_node_amount / (float)data_wrapper->data_size << endl;
       cout << "Avg. reverse batch #: "
@@ -511,22 +595,24 @@ class RecursionIndex : public BaseIndex {
   void buildIndex(const IndexParams *index_params) override {
     cout << "Building Index using " << index_info->index_version_type << endl;
     timeval tt1, tt2;
-    visited_list_pool_ = new delta_index_hnsw_full_reverse::VisitedListPool(
-        1, data_wrapper->data_size);
+    visited_list_pool_ =
+        new base_hnsw::VisitedListPool(1, data_wrapper->data_size);
 
+    index_params_ = index_params;
     // build HNSW
     L2Space space(data_wrapper->data_dim);
-    RangeFilteringHNSW<float> hnsw(
+    SegmentGraph2DHNSW<float> hnsw(
         *index_params, &space, 2 * data_wrapper->data_size, index_params->K,
         index_params->ef_construction, index_params->random_seed);
 
     directed_indexed_arr.clear();
     directed_indexed_arr.resize(data_wrapper->data_size);
-    hnsw.directed_nns = &directed_indexed_arr;
-
-    hnsw.reverse_nns_vecs.resize(data_wrapper->data_size);
+    hnsw.segment_graph = &directed_indexed_arr;
     gettimeofday(&tt1, NULL);
-    // #pragma omp parallel for
+
+    // multi-thread also work, but not guaranteed as the paper
+    // may has minor recall decrement
+    // #pragma omp parallel for schedule(monotonic : dynamic)
     for (size_t i = 0; i < data_wrapper->data_size; ++i) {
       hnsw.addPoint(data_wrapper->nodes.at(i).data(), i);
     }
@@ -544,8 +630,8 @@ class RecursionIndex : public BaseIndex {
     }
   };
 
-  vector<OneBatchNeighbors>::const_iterator decompressForwardPath(
-      const vector<OneBatchNeighbors> &forward_nns, const int lbound) {
+  vector<OneSegmentNeighbors>::const_iterator decompressForwardPath(
+      const vector<OneSegmentNeighbors> &forward_nns, const int lbound) {
     // forward iterator
     auto forward_batch_it = forward_nns.begin();
     while (forward_batch_it != forward_nns.end()) {
@@ -557,8 +643,8 @@ class RecursionIndex : public BaseIndex {
     return forward_batch_it;
   }
 
-  vector<OneBatchNeighbors>::const_iterator decompressReversePath(
-      const vector<OneBatchNeighbors> &reverse_nns, const int rbound) {
+  vector<OneSegmentNeighbors>::const_iterator decompressReversePath(
+      const vector<OneSegmentNeighbors> &reverse_nns, const int rbound) {
     auto reverse_batch_it = reverse_nns.begin();
     while (reverse_batch_it != reverse_nns.end()) {
       if (rbound > reverse_batch_it->start) {
@@ -580,7 +666,7 @@ class RecursionIndex : public BaseIndex {
     VisitedList *vl = visited_list_pool_->getFreeVisitedList();
     vl_type *visited_array = vl->mass;
     vl_type visited_array_tag = vl->curV;
-    float lower_bound = INT_MAX;
+    float lower_bound = std::numeric_limits<float>::max();
     std::priority_queue<pair<float, int>> top_candidates;
     std::priority_queue<pair<float, int>> candidate_set;
 
@@ -606,7 +692,7 @@ class RecursionIndex : public BaseIndex {
     }
     gettimeofday(&tt3, NULL);
 
-    // 只有一个enter
+    // only one center
     // float dist_enter = EuclideanDistance(data_nodes[l_bound], query);
     // candidate_set.push(make_pair(-dist_enter, l_bound));
     // TODO: How to find proper enters.
@@ -643,7 +729,7 @@ class RecursionIndex : public BaseIndex {
 
       // search cw on the fly
       vector<int> current_neighbors;
-      vector<vector<OneBatchNeighbors>::const_iterator> neighbor_iterators;
+      vector<const vector<int> *> neighbor_iterators;
 
       gettimeofday(&tt1, NULL);
       // current_neighbors = decompressDeltaPath(
@@ -656,23 +742,27 @@ class RecursionIndex : public BaseIndex {
             query_bound.first);
         if (forward_it !=
             directed_indexed_arr[current_node_id].forward_nns.end()) {
-          neighbor_iterators.emplace_back(forward_it);
+          neighbor_iterators.emplace_back(&forward_it->nns_id);
           if (current_node_id - query_bound.first < two_batch_threshold) {
             forward_it++;
             if (forward_it !=
                 directed_indexed_arr[current_node_id].forward_nns.end()) {
-              neighbor_iterators.emplace_back(forward_it);
+              neighbor_iterators.emplace_back(&forward_it->nns_id);
             }
           }
         }
 
         // only one batch, just insert it
-        auto reverse_it =
-            directed_indexed_arr[current_node_id].reverse_nns.begin();
-        if (reverse_it !=
-            directed_indexed_arr[current_node_id].reverse_nns.end()) {
-          neighbor_iterators.emplace_back(reverse_it);
-        }
+        // auto reverse_it =
+        //     directed_indexed_arr[current_node_id].reverse_nns.begin();
+        // if (reverse_it !=
+        //     directed_indexed_arr[current_node_id].reverse_nns.end()) {
+        //   neighbor_iterators.emplace_back(reverse_it);
+        // }
+
+        // Update: update the reverse structure
+        neighbor_iterators.emplace_back(
+            &directed_indexed_arr.at(current_node_id).reverse_nns);
       }
 
       gettimeofday(&tt2, NULL);
@@ -682,7 +772,7 @@ class RecursionIndex : public BaseIndex {
       gettimeofday(&tt1, NULL);
 
       for (auto batch_it : neighbor_iterators) {
-        for (auto candidate_id : batch_it->nns_id) {
+        for (auto candidate_id : *batch_it) {
           if (candidate_id < query_bound.first ||
               candidate_id > query_bound.second)
             continue;
@@ -738,7 +828,6 @@ class RecursionIndex : public BaseIndex {
 
     gettimeofday(&tt4, NULL);
     CountTime(tt3, tt4, search_info->internal_search_time);
-
     return res;
   }
 
@@ -752,11 +841,10 @@ class RecursionIndex : public BaseIndex {
     VisitedList *vl = visited_list_pool_->getFreeVisitedList();
     vl_type *visited_array = vl->mass;
     vl_type visited_array_tag = vl->curV;
-    float lower_bound = INT_MAX;
+    float lower_bound = std::numeric_limits<float>::max();
     std::priority_queue<pair<float, int>> top_candidates;
     std::priority_queue<pair<float, int>> candidate_set;
 
-    const int data_size = data_wrapper->data_size;
     search_info->total_comparison = 0;
     search_info->internal_search_time = 0;
     search_info->cal_dist_time = 0;
@@ -795,7 +883,8 @@ class RecursionIndex : public BaseIndex {
 
       candidate_set.pop();
       vector<int> current_neighbors;
-      vector<vector<OneBatchNeighbors>::const_iterator> neighbor_iterators;
+      // vector<vector<OneSegmentNeighbors>::const_iterator> neighbor_iterators;
+      vector<const vector<int> *> neighbor_iterators;
 
       gettimeofday(&tt1, NULL);
       {
@@ -804,16 +893,11 @@ class RecursionIndex : public BaseIndex {
             query_bound.first);
         if (forward_it !=
             directed_indexed_arr[current_node_id].forward_nns.end()) {
-          neighbor_iterators.emplace_back(forward_it);
-          // only add one batch in this method
+          neighbor_iterators.emplace_back(&forward_it->nns_id);
         }
-
-        auto reverse_it =
-            directed_indexed_arr[current_node_id].reverse_nns.begin();
-        if (reverse_it !=
-            directed_indexed_arr[current_node_id].reverse_nns.end()) {
-          neighbor_iterators.emplace_back(reverse_it);
-        }
+        // Update: update the reverse structure
+        neighbor_iterators.emplace_back(
+            &directed_indexed_arr.at(current_node_id).reverse_nns);
       }
 
       gettimeofday(&tt2, NULL);
@@ -821,10 +905,15 @@ class RecursionIndex : public BaseIndex {
       gettimeofday(&tt1, NULL);
 
       for (auto batch_it : neighbor_iterators) {
-        for (auto candidate_id : batch_it->nns_id) {
+        unsigned visited_nn_num = 0;
+        for (auto candidate_id : *batch_it) {
           if (candidate_id < query_bound.first ||
               candidate_id > query_bound.second)
             continue;
+          visited_nn_num++;
+
+          // visiting more than K neighbors, break. for reverse nn
+          if (visited_nn_num > 2 * index_params_->K) break;
           if (!(visited_array[candidate_id] == visited_array_tag)) {
             visited_array[candidate_id] = visited_array_tag;
 
@@ -836,16 +925,12 @@ class RecursionIndex : public BaseIndex {
             if (top_candidates.size() < search_params->search_ef ||
                 lower_bound > dist) {
               candidate_set.emplace(-dist, candidate_id);
-              // add to top_candidates only in range
-              if (candidate_id <= query_bound.second &&
-                  candidate_id >= query_bound.first) {
-                top_candidates.emplace(dist, candidate_id);
-                if (top_candidates.size() > search_params->search_ef) {
-                  top_candidates.pop();
-                }
-                if (!top_candidates.empty()) {
-                  lower_bound = top_candidates.top().first;
-                }
+              top_candidates.emplace(dist, candidate_id);
+              if (top_candidates.size() > search_params->search_ef) {
+                top_candidates.pop();
+              }
+              if (!top_candidates.empty()) {
+                lower_bound = top_candidates.top().first;
               }
             }
           }
@@ -879,10 +964,10 @@ class RecursionIndex : public BaseIndex {
     return res;
   }
 
-  ~RecursionIndex() {
+  ~IndexSegmentGraph2D() {
     delete index_info;
     directed_indexed_arr.clear();
     delete visited_list_pool_;
   }
 };
-}  // namespace rangeindex
+}  // namespace SeRF

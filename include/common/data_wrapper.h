@@ -34,6 +34,7 @@ class DataWrapper {
   bool is_even_weight;
   bool real_keys;
 
+  // TODO: change vector storage to array
   vector<vector<float>> nodes;
   vector<int> nodes_keys;  // search_keys
   vector<vector<float>>
@@ -48,4 +49,16 @@ class DataWrapper {
   void generateHalfBoundedQueriesAndGroundtruth(bool is_save = false,
                                                 const string path = "");
   void LoadGroundtruth(const string &gt_path);
+
+  void generateRangeFilteringQueriesAndGroundtruthScalability(
+      bool is_save = false, const string path = "");
+
+  void generateHalfBoundedQueriesAndGroundtruthScalability(
+      bool is_save = false, const string path = "");
+
+  void generateHalfBoundedQueriesAndGroundtruthBenchmark(
+      bool is_save_to_file, const string save_path = "");
+
+  void generateRangeFilteringQueriesAndGroundtruthBenchmark(
+      bool is_save_to_file, const string save_path = "");
 };

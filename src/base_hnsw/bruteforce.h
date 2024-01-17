@@ -4,7 +4,7 @@
 #include <mutex>
 #include <unordered_map>
 
-namespace delta_index_hnsw_full_reverse {
+namespace base_hnsw {
 template <typename dist_t>
 class BruteforceSearch : public AlgorithmInterface<dist_t> {
  public:

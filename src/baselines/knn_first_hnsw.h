@@ -14,7 +14,7 @@
 #include <vector>
 
 #include "incremental_hnsw/hnswlib.h"
-#include "range_index_base.h"
+#include "index_base.h"
 #include "utils.h"
 
 using std::cout;
@@ -161,7 +161,7 @@ class KnnFirstWrapper : BaseIndex {
       const vector<float> &query,
       const std::pair<int, int> query_bound) override {
     return rangeFilteringSearchOutBound(search_params, search_info, query,
-                                 query_bound);
+                                        query_bound);
   }
 
   vector<int> rangeFilteringSearchOutBound(
@@ -187,13 +187,15 @@ class KnnFirstWrapper : BaseIndex {
     CountTime(tt1, tt2, search_info->internal_search_time);
     return result_in_range;
   }
+
+  void saveIndex(const string &save_path) { hnsw_index->saveIndex(save_path); }
+
   ~KnnFirstWrapper() {
     delete hnsw_index;
     delete index_info;
     delete space;
   }
 };
-
 
 void execute_knn_first_search(KnnFirstWrapper &index,
                               BaseIndex::SearchInfo &search_info,
@@ -224,6 +226,37 @@ void execute_knn_first_search(KnnFirstWrapper &index,
       // print_set(res);
       // print_set(data_wrapper.groundtruth.at(idx));
       // cout << endl;
+
+      search_info.RecordOneQuery(&s_params);
+    }
+
+    logTime(tt3, tt4, "total query time");
+  }
+}
+
+void execute_knn_first_search_groundtruth_wrapper(
+    KnnFirstWrapper &index, BaseIndex::SearchInfo &search_info,
+    const DataWrapper &data_wrapper, const DataWrapper &groundtruth_wrapper,
+    const vector<int> &searchef_para_range_list) {
+  timeval tt3, tt4;
+  for (auto one_searchef : searchef_para_range_list) {
+    gettimeofday(&tt3, NULL);
+    for (int idx = 0; idx < groundtruth_wrapper.query_ids.size(); idx++) {
+      int one_id = groundtruth_wrapper.query_ids.at(idx);
+      BaseIndex::SearchParams s_params;
+      s_params.query_K = data_wrapper.query_k;
+      s_params.search_ef = one_searchef;
+      s_params.control_batch_threshold = 1;
+      s_params.query_range = groundtruth_wrapper.query_ranges.at(idx).second -
+                             groundtruth_wrapper.query_ranges.at(idx).first;
+      auto res = index.rangeFilteringSearchOutBound(
+          &s_params, &search_info, data_wrapper.querys.at(one_id),
+          groundtruth_wrapper.query_ranges.at(idx));
+      search_info.precision =
+          countPrecision(groundtruth_wrapper.groundtruth.at(idx), res);
+      search_info.approximate_ratio = countApproximationRatio(
+          data_wrapper.nodes, groundtruth_wrapper.groundtruth.at(idx), res,
+          data_wrapper.querys.at(one_id));
 
       search_info.RecordOneQuery(&s_params);
     }

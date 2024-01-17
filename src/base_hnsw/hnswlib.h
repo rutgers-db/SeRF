@@ -30,9 +30,7 @@
 #include <queue>
 #include <vector>
 
-#include "base_struct.h"
-
-namespace delta_index_hnsw_full_reverse {
+namespace base_hnsw {
 typedef size_t labeltype;
 
 template <typename T>
@@ -105,7 +103,7 @@ AlgorithmInterface<dist_t>::searchKnnCloserFirst(const void *query_data,
   return result;
 }
 
-}  // namespace delta_index_hnsw_full_reverse
+}  // namespace base_hnsw
 
 #include "bruteforce.h"
 #include "hnswalg.h"

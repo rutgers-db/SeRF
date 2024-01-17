@@ -16,8 +16,8 @@ std::vector<float> FvecsItrReader::Next() {
   int D;
   if (ifs.read((char *)&D, sizeof(int))) {  // read "D"
     // Then, read a D-dim vec
-    vec.resize(D);                                            // allocate D-dim
-    assert(ifs.read((char *)vec.data(), sizeof(float) * D));  // Read D * float.
+    vec.resize(D);                                    // allocate D-dim
+    ifs.read((char *)vec.data(), sizeof(float) * D);  // Read D * float.
     eof_flag = false;
   } else {
     vec.clear();
@@ -87,7 +87,7 @@ std::vector<std::vector<float>> ReadTopN(std::string filename, std::string ext,
     if (top_n != -1 && top_n <= (int)vecs.size()) {
       break;
     }
-    vecs.push_back(reader.Next());
+    vecs.emplace_back(reader.Next());
   }
   return vecs;
 }
@@ -182,45 +182,20 @@ void ReadDataWrapper(vector<vector<float>> &raw_data, vector<int> &search_keys,
                      const int item_num) {
   raw_data.clear();
   if (dataset == "glove") {
-    if (dataset_path == "")
-      dataset_path =
-          "/common/home/cz296/workspace/rank21/glove/glove.twitter.27B.50d.txt";
     ReadMatFromTxtTwitter(dataset_path, raw_data, item_num);
   } else if (dataset == "ml25m") {
-    if (dataset_path == "")
-      dataset_path =
-          "/common/home/cz296/workspace/rank21/model_data/"
-          "model-vectors/users.txt";
     ReadMatFromTxt(dataset_path, raw_data, item_num);
   } else if (dataset == "sift") {
-    if (dataset_path == "")
-      dataset_path = "/data/local/pqdata/bigann/base.bvecs";
     raw_data = ReadTopN(dataset_path, "bvecs", item_num);
   } else if (dataset == "biggraph") {
-    if (dataset_path == "")
-      dataset_path =
-          "/data/local/biggraph/embedding/wikidata_translation_v1.tsv";
     ReadMatFromTsv(dataset_path, raw_data, item_num);
   } else if (dataset == "local") {
-    if (dataset_path == "")
-      dataset_path =
-          "/Users/ciuji/dd_workspace/project7-rangeKNN/"
-          "range-knn-code/data/siftsmall_base.fvecs";
-    cout << dataset_path << endl;
     raw_data = ReadTopN(dataset_path, "fvecs", item_num);
   } else if (dataset == "deep") {
-    if (dataset_path == "")
-      dataset_path = "/data/local/pqdata/deep1b/base.fvecs";
     raw_data = ReadTopN(dataset_path, "fvecs", item_num);
   } else if (dataset == "deep10m") {
-    if (dataset_path == "")
-      dataset_path = "/common/home/cz296/dataset/deep10M.fvecs";
     raw_data = ReadTopN(dataset_path, "fvecs", item_num);
   } else if (dataset == "yt8m") {
-    if (dataset_path == "")
-      dataset_path =
-          "/data/local/embedding_dataset/youtube-8m/"
-          "yt8m-video-embedding-publish-timestamp.csv";
     ReadMatFromTsvYT8M(dataset_path, raw_data, search_keys, item_num);
   } else {
     std::cerr << "Wrong Datset!" << endl;
@@ -236,79 +211,33 @@ void ReadDataWrapper(const string &dataset, string &dataset_path,
   raw_data.clear();
   if (dataset == "glove" || dataset == "glove25" || dataset == "glove50" ||
       dataset == "glove100" || dataset == "glove200") {
-    if (dataset_path == "")
-      dataset_path =
-          "/common/home/cz296/workspace/rank21/glove/glove.twitter.27B.50d.txt";
     ReadMatFromTxtTwitter(dataset_path, raw_data, data_size);
   } else if (dataset == "ml25m") {
-    if (dataset_path == "")
-      dataset_path =
-          "/common/home/cz296/workspace/rank21/model_data/"
-          "model-vectors/users.txt";
     ReadMatFromTxt(dataset_path, raw_data, data_size);
   } else if (dataset == "sift") {
-    if (dataset_path == "")
-      dataset_path = "/data/local/pqdata/bigann/base.bvecs";
     raw_data = ReadTopN(dataset_path, "bvecs", data_size);
-
-    if (query_path == "") query_path = "/data/local/pqdata/bigann/query.bvecs";
     querys = ReadTopN(query_path, "bvecs", query_size);
   } else if (dataset == "biggraph") {
-    if (dataset_path == "")
-      dataset_path =
-          "/data/local/biggraph/embedding/wikidata_translation_v1.tsv";
     ReadMatFromTsv(dataset_path, raw_data, data_size);
   } else if (dataset == "local") {
-    if (dataset_path == "")
-      dataset_path =
-          "/Users/ciuji/dd_workspace/project7-rangeKNN/"
-          "range-knn-code/data/siftsmall_base.fvecs";
     cout << dataset_path << endl;
     raw_data = ReadTopN(dataset_path, "fvecs", data_size);
   } else if (dataset == "deep") {
-    if (dataset_path == "")
-      dataset_path = "/data/local/pqdata/deep1b/base.fvecs";
-    if (query_path == "") {
-      query_path = "/data/local/pqdata/deep1b/query.fvecs";
-    }
     raw_data = ReadTopN(dataset_path, "fvecs", data_size);
     querys = ReadTopN(query_path, "fvecs", query_size);
-
   } else if (dataset == "deep10m") {
-    if (dataset_path == "")
-      dataset_path = "/common/home/cz296/dataset/deep10M.fvecs";
     raw_data = ReadTopN(dataset_path, "fvecs", data_size);
-
   } else if (dataset == "yt8m") {
-    if (dataset_path == "")
-      dataset_path =
-          "/data/local/embedding_dataset/youtube-8m/"
-          "yt8m-video-embedding-publish-timestamp.csv";
     ReadMatFromTsvYT8M(dataset_path, raw_data, search_keys, data_size);
-
   } else if (dataset == "yt8m-video") {
     ReadFvecsTopN(dataset_path, raw_data, data_size, 1024);
     ReadFvecsTopN(query_path, querys, query_size, 1024);
-
   } else if (dataset == "yt8m-audio") {
     ReadFvecsTopN(dataset_path, raw_data, data_size, 128);
     ReadFvecsTopN(query_path, querys, query_size, 128);
 
   } else if (dataset == "wiki-image") {
-    if (dataset_path == "")
-      dataset_path =
-          "/data/local/embedding_dataset/wikipedia-image-caption/"
-          "embedding_metadata_anns/wiki_image_embedding.fvecs";
-    string search_keys_path =
-        "/data/local/embedding_dataset/wikipedia-image-caption/"
-        "embedding_metadata_anns/wiki_image_metadata.ivecs";
     ReadFvecsTopN(dataset_path, raw_data, data_size, 2048);
-    // ReadIvecsTopN(search_keys_path, search_keys, data_size, 3, 2);
-
-    if (query_path == "")
-      query_path =
-          "/data/local/embedding_dataset/wikipedia-image-caption/"
-          "embedding_metadata_anns/wiki_image_querys.fvecs";
     ReadFvecsTopN(query_path, querys, query_size, 2048);
 
   }
@@ -606,48 +535,20 @@ void ReadDataWrapper(const string &dataset, string &dataset_path,
   raw_data.clear();
   if (dataset == "glove" || dataset == "glove25" || dataset == "glove50" ||
       dataset == "glove100" || dataset == "glove200") {
-    if (dataset_path == "")
-      dataset_path =
-          "/common/home/cz296/workspace/rank21/glove/glove.twitter.27B.50d.txt";
     ReadMatFromTxtTwitter(dataset_path, raw_data, data_size);
   } else if (dataset == "ml25m") {
-    if (dataset_path == "")
-      dataset_path =
-          "/common/home/cz296/workspace/rank21/model_data/"
-          "model-vectors/users.txt";
     ReadMatFromTxt(dataset_path, raw_data, data_size);
   } else if (dataset == "sift") {
-    if (dataset_path == "")
-      dataset_path = "/data/local/pqdata/bigann/base.bvecs";
     raw_data = ReadTopN(dataset_path, "bvecs", data_size);
-
   } else if (dataset == "biggraph") {
-    if (dataset_path == "")
-      dataset_path =
-          "/data/local/biggraph/embedding/wikidata_translation_v1.tsv";
     ReadMatFromTsv(dataset_path, raw_data, data_size);
   } else if (dataset == "local") {
-    if (dataset_path == "")
-      dataset_path =
-          "/Users/ciuji/dd_workspace/project7-rangeKNN/"
-          "range-knn-code/data/siftsmall_base.fvecs";
-    cout << dataset_path << endl;
     raw_data = ReadTopN(dataset_path, "fvecs", data_size);
   } else if (dataset == "deep") {
-    if (dataset_path == "")
-      dataset_path = "/data/local/pqdata/deep1b/base.fvecs";
     raw_data = ReadTopN(dataset_path, "fvecs", data_size);
-
   } else if (dataset == "deep10m") {
-    if (dataset_path == "")
-      dataset_path = "/common/home/cz296/dataset/deep10M.fvecs";
     raw_data = ReadTopN(dataset_path, "fvecs", data_size);
-
   } else if (dataset == "yt8m") {
-    if (dataset_path == "")
-      dataset_path =
-          "/data/local/embedding_dataset/youtube-8m/"
-          "yt8m-video-embedding-publish-timestamp.csv";
     ReadMatFromTsvYT8M(dataset_path, raw_data, data_size);
   } else {
     std::cerr << "Wrong Datset!" << endl;

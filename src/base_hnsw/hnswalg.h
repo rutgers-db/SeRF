@@ -16,7 +16,7 @@ using std::vector;
 // ef_max_ -> original ef_construction_ for search neighbors before pruning
 // ef_for_pruning -> top in ef_max, actual ef_construction
 
-namespace delta_index_hnsw_full_reverse {
+namespace base_hnsw {
 typedef unsigned int tableint;
 typedef unsigned int linklistsizeint;
 
@@ -46,10 +46,8 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     maxM_ = M_;
     maxM0_ = M_;
     ef_basic_construction_ =
-        std::max(ef_construction, M_);  // orignal ef_constructio
+        std::max(ef_construction, M_);  // orignal ef_construction
     ef_ = 10;
-
-    // ef_for_pruning_ = 300;
 
     level_generator_.seed(random_seed);
     update_probability_generator_.seed(random_seed + 1);
@@ -105,18 +103,12 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
   // for range hnsw
 
-  vector<DirectedNeighbors> *directed_nns;
-  // vector<vector<NeighborLifeCycle>> *range_nns;
-
-  // vector<DirectedNeighborsPairWindows> *directed_nns_pair;
-
   bool is_recursively_add;
   size_t recursive_limitation = 25;
   bool is_two_way = true;
   size_t range_add_type = 0;
   // 0: original(x), 1: single-way, 2: two-way-simple 3: two-way-round, 4:
   // two-way-pair-windows
-  // size_t ef_for_pruning_;
   size_t ef_max_;
   size_t ef_basic_construction_;
 
@@ -192,6 +184,100 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     std::uniform_real_distribution<double> distribution(0.0, 1.0);
     double r = -log(distribution(level_generator_)) * reverse_size;
     return (int)r;
+  }
+
+  virtual std::priority_queue<std::pair<dist_t, tableint>,
+                              std::vector<std::pair<dist_t, tableint>>,
+                              CompareByFirst>
+  searchBaseLayerLevel0(tableint ep_id, const void *data_point, int layer) {
+    VisitedList *vl = visited_list_pool_->getFreeVisitedList();
+    vl_type *visited_array = vl->mass;
+    vl_type visited_array_tag = vl->curV;
+
+    std::priority_queue<std::pair<dist_t, tableint>,
+                        std::vector<std::pair<dist_t, tableint>>,
+                        CompareByFirst>
+        top_candidates;
+    std::priority_queue<std::pair<dist_t, tableint>,
+                        std::vector<std::pair<dist_t, tableint>>,
+                        CompareByFirst>
+        candidateSet;
+
+    size_t ef_construction = layer ? ef_basic_construction_ : ef_max_;
+
+    dist_t lowerBound;
+    if (!isMarkedDeleted(ep_id)) {
+      dist_t dist = fstdistfunc_(data_point, getDataByInternalId(ep_id),
+                                 dist_func_param_);
+      top_candidates.emplace(dist, ep_id);
+      lowerBound = dist;
+      candidateSet.emplace(-dist, ep_id);
+    } else {
+      lowerBound = std::numeric_limits<dist_t>::max();
+      candidateSet.emplace(-lowerBound, ep_id);
+    }
+    visited_array[ep_id] = visited_array_tag;
+
+    while (!candidateSet.empty()) {
+      std::pair<dist_t, tableint> curr_el_pair = candidateSet.top();
+      if ((-curr_el_pair.first) > lowerBound) {
+        break;
+      }
+      candidateSet.pop();
+
+      tableint curNodeNum = curr_el_pair.second;
+
+      std::unique_lock<std::mutex> lock(link_list_locks_[curNodeNum]);
+
+      int *data;  // = (int *)(linkList0_ + curNodeNum *
+                  // size_links_per_element0_);
+      if (layer == 0) {
+        data = (int *)get_linklist0(curNodeNum);
+      } else {
+        data = (int *)get_linklist(curNodeNum, layer);
+        //                    data = (int *) (linkLists_[curNodeNum] + (layer
+        //                    - 1) * size_links_per_element_);
+      }
+      size_t size = getListCount((linklistsizeint *)data);
+      tableint *datal = (tableint *)(data + 1);
+#ifdef USE_SSE
+      _mm_prefetch((char *)(visited_array + *(data + 1)), _MM_HINT_T0);
+      _mm_prefetch((char *)(visited_array + *(data + 1) + 64), _MM_HINT_T0);
+      _mm_prefetch(getDataByInternalId(*datal), _MM_HINT_T0);
+      _mm_prefetch(getDataByInternalId(*(datal + 1)), _MM_HINT_T0);
+#endif
+
+      for (size_t j = 0; j < size; j++) {
+        tableint candidate_id = *(datal + j);
+//                    if (candidate_id == 0) continue;
+#ifdef USE_SSE
+        _mm_prefetch((char *)(visited_array + *(datal + j + 1)), _MM_HINT_T0);
+        _mm_prefetch(getDataByInternalId(*(datal + j + 1)), _MM_HINT_T0);
+#endif
+        if (visited_array[candidate_id] == visited_array_tag) continue;
+        visited_array[candidate_id] = visited_array_tag;
+        char *currObj1 = (getDataByInternalId(candidate_id));
+
+        dist_t dist1 = fstdistfunc_(data_point, currObj1, dist_func_param_);
+        if (top_candidates.size() < ef_construction || lowerBound > dist1) {
+          candidateSet.emplace(-dist1, candidate_id);
+#ifdef USE_SSE
+          _mm_prefetch(getDataByInternalId(candidateSet.top().second),
+                       _MM_HINT_T0);
+#endif
+
+          if (!isMarkedDeleted(candidate_id))
+            top_candidates.emplace(dist1, candidate_id);
+
+          if (top_candidates.size() > ef_construction) top_candidates.pop();
+
+          if (!top_candidates.empty()) lowerBound = top_candidates.top().first;
+        }
+      }
+    }
+    visited_list_pool_->releaseVisitedList(vl);
+
+    return top_candidates;
   }
 
   std::priority_queue<std::pair<dist_t, tableint>,
@@ -458,223 +544,6 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                       : get_linklist(internal_id, level);
   };
 
-  // // connect all reverse neighbors, undirected
-  // tableint mutuallyConnectNewElementFullReverse(
-  //     const void *data_point, tableint cur_c,
-  //     std::priority_queue<std::pair<dist_t, tableint>,
-  //                         std::vector<std::pair<dist_t, tableint>>,
-  //                         CompareByFirst> &top_candidates,
-  //     int level, bool isUpdate) {
-  //   size_t Mcurmax = level ? maxM_ : maxM0_;
-  //   getNeighborsByHeuristic2(top_candidates, M_);
-  //   if (top_candidates.size() > M_)
-  //     throw std::runtime_error(
-  //         "Should be not be more than M_ candidates returned by the "
-  //         "heuristic");
-
-  //   // forward neighbors in top candidates
-  //   int external_id = getExternalLabel(cur_c);
-  //   auto nns = &range_nns->at(external_id);
-
-  //   std::vector<tableint> selectedNeighbors;
-  //   selectedNeighbors.reserve(M_);
-  //   while (top_candidates.size() > 0) {
-  //     selectedNeighbors.push_back(top_candidates.top().second);
-
-  //     int external_nn = getExternalLabel(selectedNeighbors.back());
-  //     if (level == 0) {
-  //       NeighborLifeCycle nn(external_nn, top_candidates.top().first,
-  //                            external_nn, external_nn);
-  //       nns->emplace_back(nn);
-  //     }
-
-  //     top_candidates.pop();
-  //   }
-
-  //   tableint next_closest_entry_point = selectedNeighbors.back();
-
-  //   {
-  //     linklistsizeint *ll_cur;
-  //     if (level == 0)
-  //       ll_cur = get_linklist0(cur_c);
-  //     else
-  //       ll_cur = get_linklist(cur_c, level);
-
-  //     if (*ll_cur && !isUpdate) {
-  //       throw std::runtime_error(
-  //           "The newly inserted element should have blank link list");
-  //     }
-  //     setListCount(ll_cur, selectedNeighbors.size());
-  //     tableint *data = (tableint *)(ll_cur + 1);
-  //     for (size_t idx = 0; idx < selectedNeighbors.size(); idx++) {
-  //       if (data[idx] && !isUpdate)
-  //         throw std::runtime_error("Possible memory corruption");
-  //       if (level > element_levels_[selectedNeighbors[idx]])
-  //         throw std::runtime_error(
-  //             "Trying to make a link on a non-existent level");
-
-  //       data[idx] = selectedNeighbors[idx];
-  //     }
-  //   }
-
-  //   for (size_t idx = 0; idx < selectedNeighbors.size(); idx++) {
-  //     std::unique_lock<std::mutex> lock(
-  //         link_list_locks_[selectedNeighbors[idx]]);
-
-  //     linklistsizeint *ll_other;
-  //     if (level == 0)
-  //       ll_other = get_linklist0(selectedNeighbors[idx]);
-  //     else
-  //       ll_other = get_linklist(selectedNeighbors[idx], level);
-
-  //     size_t sz_link_list_other = getListCount(ll_other);
-
-  //     if (sz_link_list_other > Mcurmax)
-  //       throw std::runtime_error("Bad value of sz_link_list_other");
-  //     if (selectedNeighbors[idx] == cur_c)
-  //       throw std::runtime_error("Trying to connect an element to itself");
-  //     if (level > element_levels_[selectedNeighbors[idx]])
-  //       throw std::runtime_error(
-  //           "Trying to make a link on a non-existent level");
-
-  //     tableint *data = (tableint *)(ll_other + 1);
-
-  //     bool is_cur_c_present = false;
-  //     if (isUpdate) {
-  //       for (size_t j = 0; j < sz_link_list_other; j++) {
-  //         if (data[j] == cur_c) {
-  //           is_cur_c_present = true;
-  //           break;
-  //         }
-  //       }
-  //     }
-
-  //     // If cur_c is already present in the neighboring connections of
-  //     // `selectedNeighbors[idx]` then no need to modify any connections or
-  //     // run the heuristics.
-  //     if (!is_cur_c_present) {
-  //       if (sz_link_list_other < Mcurmax) {
-  //         data[sz_link_list_other] = cur_c;
-  //         setListCount(ll_other, sz_link_list_other + 1);
-
-  //         if (level == 0) {
-  //           // add external_id to nns (backward nn)
-  //           int external_backward_id =
-  //           getExternalLabel(selectedNeighbors[idx]); NeighborLifeCycle
-  //           backward_nn(external_id, 0, external_id,
-  //                                         external_id);
-  //           range_nns->at(external_backward_id).emplace_back(backward_nn);
-  //         }
-
-  //       } else {
-  //         // finding the "weakest" element to replace it with the new one
-  //         dist_t d_max = fstdistfunc_(
-  //             getDataByInternalId(cur_c),
-  //             getDataByInternalId(selectedNeighbors[idx]), dist_func_param_);
-  //         // Heuristic:
-  //         std::priority_queue<std::pair<dist_t, tableint>,
-  //                             std::vector<std::pair<dist_t, tableint>>,
-  //                             CompareByFirst>
-  //             candidates;
-  //         candidates.emplace(d_max, cur_c);
-
-  //         for (size_t j = 0; j < sz_link_list_other; j++) {
-  //           candidates.emplace(
-  //               fstdistfunc_(getDataByInternalId(data[j]),
-  //                            getDataByInternalId(selectedNeighbors[idx]),
-  //                            dist_func_param_),
-  //               data[j]);
-  //         }
-
-  //         getNeighborsByHeuristic2(candidates, Mcurmax);
-
-  //         // Backward nns in candidates
-  //         if (level == 0) {
-  //           // cout << "id: " << getExternalLabel(selectedNeighbors[idx]) <<
-  //           // endl;
-  //           auto back_nns =
-  //               &range_nns->at(getExternalLabel(selectedNeighbors[idx]));
-  //           auto temp_candidates(candidates);
-
-  //           std::vector<int> survive_nns;  // nns kept after pruning
-
-  //           while (!temp_candidates.empty()) {
-  //             auto temp_id = temp_candidates.top().second;
-  //             survive_nns.emplace_back(getExternalLabel(temp_id));
-  //             temp_candidates.pop();
-  //           }
-
-  //           // if (getExternalLabel(selectedNeighbors[idx] == 0)) {
-  //           //   cout << endl
-  //           //        << "neighbors of :"
-  //           //        << getExternalLabel(selectedNeighbors[idx]) << endl;
-  //           //   for (auto ele : survive_nns) {
-  //           //     cout << ele << "    ";
-  //           //   }
-  //           //   cout << endl;
-  //           // }
-
-  //           for (unsigned ii = 0; ii < back_nns->size(); ii++) {
-  //             auto nn = &back_nns->at(ii);
-  //             if (nn->start == nn->end) {
-  //               if (std::find(survive_nns.begin(), survive_nns.end(), nn->id)
-  //               ==
-  //                   survive_nns.end()) {
-  //                 // nn not survive
-  //                 nn->end = external_id;
-  //               }
-  //             }
-  //           }
-
-  //           // cur_c could be inserted
-  //           if (std::find(survive_nns.begin(), survive_nns.end(),
-  //                         external_id) != survive_nns.end()) {
-  //             // add external_id to nns (backward nn)
-  //             NeighborLifeCycle backward_nn(external_id, 0, external_id,
-  //                                           external_id);
-  //             back_nns->emplace_back(backward_nn);
-  //           }
-
-  //           // case 1: in back_nns, not in temp_candidates
-  //           // case 2: in temp_candidates, not in back_nns
-  //           // case 3: size doesn't meet Mcurmax, add to back but not prune
-  //           //         forward nns too few.
-
-  //           // case 1: mark dead nn.
-  //           // case 2: mark new nn.
-  //           // case 3:
-
-  //           // Get prune when and only when cur_c inserted.
-  //           // So the end should be cur_c? rather than the others?
-  //         }
-
-  //         int indx = 0;
-  //         while (candidates.size() > 0) {
-  //           data[indx] = candidates.top().second;
-  //           candidates.pop();
-  //           indx++;
-  //         }
-
-  //         setListCount(ll_other, indx);
-  //         // Nearest K:
-  //         /*int indx = -1;
-  //         for (int j = 0; j < sz_link_list_other; j++) {
-  //             dist_t d = fstdistfunc_(getDataByInternalId(data[j]),
-  //         getDataByInternalId(rez[idx]), dist_func_param_); if (d > d_max) {
-  //                 indx = j;
-  //                 d_max = d;
-  //             }
-  //         }
-  //         if (indx >= 0) {
-  //             data[indx] = cur_c;
-  //         } */
-  //       }
-  //     }
-  //   }
-
-  //   return next_closest_entry_point;
-  // }
-
   tableint mutuallyConnectNewElement(
       const void *data_point, tableint cur_c,
       std::priority_queue<std::pair<dist_t, tableint>,
@@ -816,326 +685,6 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
       int level, bool isUpdate) {
     return 0;
   }
-
-  // // connect two way neighbors
-  // virtual tableint mutuallyConnectNewElementLevel0(
-  //     const void *data_point, tableint cur_c,
-  //     std::priority_queue<std::pair<dist_t, tableint>,
-  //                         std::vector<std::pair<dist_t, tableint>>,
-  //                         CompareByFirst> &top_candidates,
-  //     int level, bool isUpdate) {
-  //   assert(level == 0);
-
-  //   // if (range_add_type == 4)
-  //   //   return (mutuallyConnectNewElementLevel0PairWindows(
-  //   //       data_point, cur_c, top_candidates, level, isUpdate));
-
-  //   // if (range_add_type == 3)
-  //   //   return (mutuallyConnectNewElementLevel0Rounds(
-  //   //       data_point, cur_c, top_candidates, level, isUpdate));
-
-  //   // if (range_add_type == 0) {
-  //   //   return mutuallyConnectNewElement(data_point, cur_c, top_candidates,
-  //   //   level,
-  //   //                                    isUpdate);
-  //   // }
-
-  //   // if (range_add_type == 1) {
-  //   //   return mutuallyConnectNewElementOneWay(data_point, cur_c,
-  //   //   top_candidates,
-  //   //                                          level, isUpdate);
-  //   // }
-  //   size_t Mcurmax = maxM0_;
-
-  //   std::priority_queue<std::pair<dist_t, tableint>,
-  //                       std::vector<std::pair<dist_t, tableint>>,
-  //                       CompareByFirst>
-  //       before_prune_cancidates(top_candidates);
-
-  //   getNeighborsByHeuristic2(top_candidates, M_);
-
-  //   // TODO: Try to add more neighbors here, how to avoid the M_ limitation?
-
-  //   if (top_candidates.size() > M_)
-  //     throw std::runtime_error(
-  //         "Should be not be more than M_ candidates returned by the "
-  //         "heuristic");
-
-  //   // forward neighbors in top candidates
-  //   int external_id = getExternalLabel(cur_c);
-  //   auto nns = &range_nns->at(external_id);
-
-  //   // record left most position;
-  //   int external_left_most = -1;
-
-  //   std::vector<tableint> selectedNeighbors;
-  //   selectedNeighbors.reserve(M_);
-  //   while (top_candidates.size() > 0) {
-  //     selectedNeighbors.push_back(top_candidates.top().second);
-
-  //     // for range index
-  //     int external_nn = getExternalLabel(selectedNeighbors.back());
-  //     NeighborLifeCycle nn(external_nn, top_candidates.top().first,
-  //     external_nn,
-  //                          external_nn);
-  //     nns->emplace_back(nn);
-  //     // for range index (two-way)
-  //     if (external_nn > external_left_most) {
-  //       external_left_most = external_nn;
-  //     }
-
-  //     top_candidates.pop();
-  //   }
-
-  //   tableint next_closest_entry_point = selectedNeighbors.back();
-
-  //   // for range index (two-way), add once only
-  //   // selectedNeighbors.reserve(selectedNeighbors.size() + M_);
-  //   // {
-  //   //   // re prune left candidates
-  //   //   std::priority_queue<std::pair<dist_t, tableint>,
-  //   //                       std::vector<std::pair<dist_t, tableint>>,
-  //   //                       CompareByFirst>
-  //   //       leftover_candidates;
-
-  //   //   while (!before_prune_cancidates.empty()) {
-  //   //     int external_nn =
-  //   //         getExternalLabel(before_prune_cancidates.top().second);
-  //   //     if (external_nn > external_left_most) {
-  //   //       leftover_candidates.push(before_prune_cancidates.top());
-  //   //     }
-  //   //     before_prune_cancidates.pop();
-  //   //   }
-  //   //   before_prune_cancidates = leftover_candidates;
-  //   //   getNeighborsByHeuristic2(leftover_candidates, M_);
-
-  //   //   while (!leftover_candidates.empty()) {
-  //   //     selectedNeighbors.push_back(leftover_candidates.top().second);
-
-  //   //     int external_nn = getExternalLabel(selectedNeighbors.back());
-  //   //     NeighborLifeCycle nn(external_nn, leftover_candidates.top().first,
-  //   //                          external_nn, external_nn);
-  //   //     nns->emplace_back(nn);
-  //   //     leftover_candidates.pop();
-  //   //   }
-  //   // }
-
-  //   // recursively add right most points
-  //   int recursion_counter = 0;
-  //   do {
-  //     selectedNeighbors.reserve(selectedNeighbors.size() + M_);
-
-  //     // re prune left candidates
-  //     std::priority_queue<std::pair<dist_t, tableint>,
-  //                         std::vector<std::pair<dist_t, tableint>>,
-  //                         CompareByFirst>
-  //         leftover_candidates;
-
-  //     // external_left_most to find the position;
-  //     // sort(addedNeighborPositions.begin(), addedNeighborPositions.end());
-  //     // external_left_most = addedNeighborPositions.at(0);
-
-  //     while (!before_prune_cancidates.empty()) {
-  //       int external_nn =
-  //           getExternalLabel(before_prune_cancidates.top().second);
-  //       if (external_nn > external_left_most) {
-  //         leftover_candidates.push(before_prune_cancidates.top());
-  //       }
-  //       before_prune_cancidates.pop();
-  //     }
-
-  //     if (leftover_candidates.empty() ||
-  //         selectedNeighbors.size() > maxM_allocation - maxM_) {
-  //       // no more leftover elements, break
-  //       // too much candidates, break
-  //       break;
-  //     }
-
-  //     before_prune_cancidates = leftover_candidates;
-  //     getNeighborsByHeuristic2(leftover_candidates, M_);
-
-  //     while (!leftover_candidates.empty()) {
-  //       selectedNeighbors.push_back(leftover_candidates.top().second);
-
-  //       int external_nn = getExternalLabel(selectedNeighbors.back());
-  //       NeighborLifeCycle nn(external_nn, leftover_candidates.top().first,
-  //                            external_nn, external_nn);
-  //       nns->emplace_back(nn);
-  //       leftover_candidates.pop();
-
-  //       if (external_nn > external_left_most) {
-  //         external_left_most = external_nn;
-  //       }
-  //     }
-  //   } while ((recursion_counter++ < recursive_limitation) &&
-  //            is_recursively_add);
-
-  //   // original
-  //   {
-  //     linklistsizeint *ll_cur;
-  //     ll_cur = get_linklist0(cur_c);
-  //     if (*ll_cur && !isUpdate) {
-  //       throw std::runtime_error(
-  //           "The newly inserted element should have blank link list");
-  //     }
-  //     setListCount(ll_cur, selectedNeighbors.size());
-  //     tableint *data = (tableint *)(ll_cur + 1);
-  //     for (size_t idx = 0; idx < selectedNeighbors.size(); idx++) {
-  //       if (data[idx] && !isUpdate)
-  //         throw std::runtime_error("Possible memory corruption");
-  //       if (level > element_levels_[selectedNeighbors[idx]])
-  //         throw std::runtime_error(
-  //             "Trying to make a link on a non-existent level");
-
-  //       data[idx] = selectedNeighbors[idx];
-  //     }
-  //   }
-
-  //   for (size_t idx = 0; idx < selectedNeighbors.size(); idx++) {
-  //     std::unique_lock<std::mutex> lock(
-  //         link_list_locks_[selectedNeighbors[idx]]);
-
-  //     linklistsizeint *ll_other;
-  //     ll_other = get_linklist0(selectedNeighbors[idx]);
-
-  //     size_t sz_link_list_other = getListCount(ll_other);
-
-  //     if (sz_link_list_other > maxM_allocation)
-  //       throw std::runtime_error("Bad value of sz_link_list_other");
-  //     if (selectedNeighbors[idx] == cur_c)
-  //       throw std::runtime_error("Trying to connect an element to itself");
-  //     if (level > element_levels_[selectedNeighbors[idx]])
-  //       throw std::runtime_error(
-  //           "Trying to make a link on a non-existent level");
-
-  //     tableint *data = (tableint *)(ll_other + 1);
-
-  //     bool is_cur_c_present = false;
-  //     if (isUpdate) {
-  //       for (size_t j = 0; j < sz_link_list_other; j++) {
-  //         if (data[j] == cur_c) {
-  //           is_cur_c_present = true;
-  //           break;
-  //         }
-  //       }
-  //     }
-
-  //     // If cur_c is already present in the neighboring connections of
-  //     // `selectedNeighbors[idx]` then no need to modify any connections or
-  //     // run the heuristics.
-  //     if (!is_cur_c_present) {
-  //       if (sz_link_list_other < maxM_allocation) {
-  //         // if (sz_link_list_other < Mcurmax) {
-
-  //         data[sz_link_list_other] = cur_c;
-  //         setListCount(ll_other, sz_link_list_other + 1);
-
-  //         // add external_id to nns (backward nn)
-  //         int external_backward_id =
-  //         getExternalLabel(selectedNeighbors[idx]); NeighborLifeCycle
-  //         backward_nn(external_id, 0, external_id,
-  //                                       external_id);
-  //         range_nns->at(external_backward_id).emplace_back(backward_nn);
-
-  //       } else {
-  //         // finding the "weakest" element to replace it with the new one
-  //         dist_t d_max = fstdistfunc_(
-  //             getDataByInternalId(cur_c),
-  //             getDataByInternalId(selectedNeighbors[idx]), dist_func_param_);
-  //         // Heuristic:
-  //         std::priority_queue<std::pair<dist_t, tableint>,
-  //                             std::vector<std::pair<dist_t, tableint>>,
-  //                             CompareByFirst>
-  //             candidates;
-  //         candidates.emplace(d_max, cur_c);
-
-  //         for (size_t j = 0; j < sz_link_list_other; j++) {
-  //           candidates.emplace(
-  //               fstdistfunc_(getDataByInternalId(data[j]),
-  //                            getDataByInternalId(selectedNeighbors[idx]),
-  //                            dist_func_param_),
-  //               data[j]);
-  //         }
-
-  //         getNeighborsByHeuristic2(candidates, maxM_allocation);
-
-  //         // for range index
-  //         // Backward nns in candidates
-  //         {
-  //           // cout << "id: " << getExternalLabel(selectedNeighbors[idx]) <<
-  //           // endl;
-  //           auto back_nns =
-  //               &range_nns->at(getExternalLabel(selectedNeighbors[idx]));
-  //           auto temp_candidates(candidates);
-
-  //           std::vector<int> survive_nns;  // nns kept after pruning
-
-  //           while (!temp_candidates.empty()) {
-  //             auto temp_id = temp_candidates.top().second;
-  //             survive_nns.emplace_back(getExternalLabel(temp_id));
-  //             temp_candidates.pop();
-  //           }
-
-  //           // if (getExternalLabel(selectedNeighbors[idx] == 0)) {
-  //           //   cout << endl
-  //           //        << "neighbors of :"
-  //           //        << getExternalLabel(selectedNeighbors[idx]) << endl;
-  //           //   for (auto ele : survive_nns) {
-  //           //     cout << ele << "    ";
-  //           //   }
-  //           //   cout << endl;
-  //           // }
-
-  //           for (unsigned ii = 0; ii < back_nns->size(); ii++) {
-  //             auto nn = &back_nns->at(ii);
-  //             if (nn->start == nn->end) {
-  //               if (std::find(survive_nns.begin(), survive_nns.end(), nn->id)
-  //               ==
-  //                   survive_nns.end()) {
-  //                 // nn not survive
-  //                 nn->end = external_id;
-  //               }
-  //             }
-  //           }
-
-  //           // cur_c could be inserted
-  //           if (std::find(survive_nns.begin(), survive_nns.end(),
-  //                         external_id) != survive_nns.end()) {
-  //             // add external_id to nns (backward nn)
-  //             NeighborLifeCycle backward_nn(external_id, 0, external_id,
-  //                                           external_id);
-  //             back_nns->emplace_back(backward_nn);
-  //           }
-  //           // Get prune when and only when cur_c inserted.
-  //           // So the end should be cur_c? rather than the others?
-  //         }
-
-  //         int indx = 0;
-  //         while (candidates.size() > 0) {
-  //           data[indx] = candidates.top().second;
-  //           candidates.pop();
-  //           indx++;
-  //         }
-
-  //         setListCount(ll_other, indx);
-  //         // Nearest K:
-  //         /*int indx = -1;
-  //         for (int j = 0; j < sz_link_list_other; j++) {
-  //             dist_t d = fstdistfunc_(getDataByInternalId(data[j]),
-  //         getDataByInternalId(rez[idx]), dist_func_param_); if (d > d_max) {
-  //                 indx = j;
-  //                 d_max = d;
-  //             }
-  //         }
-  //         if (indx >= 0) {
-  //             data[indx] = cur_c;
-  //         } */
-  //       }
-  //     }
-  //   }
-
-  //   return next_closest_entry_point;
-  // }
 
   std::mutex global;
   size_t ef_;
@@ -1865,7 +1414,13 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         std::priority_queue<std::pair<dist_t, tableint>,
                             std::vector<std::pair<dist_t, tableint>>,
                             CompareByFirst>
-            top_candidates = searchBaseLayer(currObj, data_point, level);
+            top_candidates;
+        if (level == 0) {
+          top_candidates = searchBaseLayerLevel0(currObj, data_point, level);
+        } else {
+          top_candidates = searchBaseLayer(currObj, data_point, level);
+        }
+
         if (epDeleted) {
           top_candidates.emplace(
               fstdistfunc_(data_point, getDataByInternalId(enterpoint_copy),
@@ -1991,4 +1546,4 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
   }
 };
 
-}  // namespace delta_index_hnsw_full_reverse
+}  // namespace base_hnsw

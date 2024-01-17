@@ -1,7 +1,7 @@
 #pragma once
 #include "hnswlib.h"
 
-namespace delta_index_hnsw_full_reverse {
+namespace base_hnsw {
 
 static float L2Sqr(const void *pVect1v, const void *pVect2v,
                    const void *qty_ptr) {
