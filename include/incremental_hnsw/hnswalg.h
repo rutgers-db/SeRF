@@ -448,8 +448,8 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
     while (!candidate_set.empty()) {
       std::pair<dist_t, tableint> current_node_pair = candidate_set.top();
-      if ((-current_node_pair.first) > lowerBound) {
-        // cout<<current_node_pair.first<<endl;
+      if ((-current_node_pair.first) > lowerBound &&
+          top_candidates.size() == search_ef) {
         break;
       }
 
