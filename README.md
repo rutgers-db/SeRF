@@ -1,6 +1,6 @@
 # SeRF
 
-This repo is the implementation of [SeRF: Segment Graph for Range Filtering Approximate Nearest Neighbor Search](https://github.com/rutgers-db/SeRF).
+This repo is the implementation of [SeRF: Segment Graph for Range Filtering Approximate Nearest Neighbor Search](https://dl.acm.org/doi/10.1145/3639324).
 
 | file | description |
 |:--:|:--:|
@@ -51,3 +51,18 @@ We hardcoded some parameters, you can change them in the code and recompile.
 - [WIT-Image](https://www.kaggle.com/c/wikipedia-image-caption/overview): Size of the image as the search key. -->
 
 ## Reference
+
+```
+@article{SeRF,
+author = {Zuo, Chaoji and Qiao, Miao and Zhou, Wenchao and Li, Feifei and Deng, Dong},
+title = {SeRF: Segment Graph for Range-Filtering Approximate Nearest Neighbor Search},
+year = {2024},
+issue_date = {February 2024},
+publisher = {Association for Computing Machinery},
+address = {New York, NY, USA},
+volume = {2},
+number = {1},
+url = {https://doi.org/10.1145/3639324},
+doi = {10.1145/3639324}
+}
+```
