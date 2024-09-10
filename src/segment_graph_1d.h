@@ -349,12 +349,16 @@ class IndexSegmentGraph1D : public BaseIndex {
     gettimeofday(&tt1, NULL);
 
     // multi-thread also work, but not guaranteed as the paper
-    // may has minor recall decrement
-    // #pragma omp parallel for schedule(monotonic : dynamic)
+#ifndef NO_PARALLEL_BUILD
+#pragma omp parallel for schedule(monotonic : dynamic)
     for (size_t i = 0; i < data_wrapper->data_size; ++i) {
-      // cout << i << endl;
       hnsw.addPoint(data_wrapper->nodes.at(i).data(), i);
     }
+#else
+    for (size_t i = 0; i < data_wrapper->data_size; ++i) {
+      hnsw.addPoint(data_wrapper->nodes.at(i).data(), i);
+    }
+#endif
 
     for (size_t i = 0; i < data_wrapper->data_size; ++i) {
       // insert not pruned hnsw graph back

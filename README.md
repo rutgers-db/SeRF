@@ -7,6 +7,8 @@ This repo is the implementation of [SeRF: Segment Graph for Range Filtering Appr
 | segment_graph_1d.h | SegmentGraph for halfbounded query |
 | segment_graph_2d.h | 2D-SegmentGraph for arbitrary query |
 
+> [!NOTE]
+> [09/09/2024] We've optimized compile options and added SIMD support. By default, construction and search operations now run in parallel with SIMD, resulting in an approximate 1.5x boost in query speed.
 
 ## Quick Start
 

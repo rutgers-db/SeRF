@@ -12,12 +12,9 @@ MESSAGE(STATUS ${CMAKE_CXX_FLAGS})
 
 set(CMAKE_CXX_STANDARD 11)
 
-message(${CMAKE_SYSTEM})
+MESSAGE(${CMAKE_SYSTEM})
 
 find_package(Boost REQUIRED COMPONENTS timer chrono system program_options)
-
-
-message(STATUS ${Boost_LIBRARIES})
 
 
 if(Boost_FOUND)
@@ -25,20 +22,45 @@ if(Boost_FOUND)
     SET (LD_LIBRARY_PATH ${BOOST_LIBRARYDIR})
 endif()
 
-include_directories(${PROJECT_SOURCE_DIR}/include)
-include_directories(${PROJECT_SOURCE_DIR}/include/common)
-include_directories(${PROJECT_SOURCE_DIR}/src)
-
-
 set(CMAKE_TRY_COMPILE_TARGET_TYPE "STATIC_LIBRARY")
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -O3 ")
 
-option(NOSIMD "build hnsw on SIMD" ON)
-IF(NOSIMD)
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    SET( CMAKE_CXX_FLAGS  "-Ofast -std=c++11 -DHAVE_CXX0X -openmp -fpic -ftree-vectorize" )
+    check_cxx_compiler_flag("-march=native" COMPILER_SUPPORT_NATIVE_FLAG)
+    if(COMPILER_SUPPORT_NATIVE_FLAG)
+        SET( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native" )
+        message("set -march=native flag")
+    else()
+        check_cxx_compiler_flag("-mcpu=apple-m1" COMPILER_SUPPORT_M1_FLAG)
+        if(COMPILER_SUPPORT_M1_FLAG)
+            SET( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mcpu=apple-m1" )
+            message("set -mcpu=apple-m1 flag")
+        endif()
+    endif()
+elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    SET( CMAKE_CXX_FLAGS  "-Ofast -lrt -std=c++11 -DHAVE_CXX0X -march=native -fpic -w -fopenmp -ftree-vectorize -ftree-vectorizer-verbose=0" )
+elseif (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    SET( CMAKE_CXX_FLAGS  "/O2 -DHAVE_CXX0X /W1 /openmp /EHsc" )
+endif()
+
+
+option(NOSIMD "build hnsw on SIMD")
+if(NOSIMD)
     add_definitions(-DNO_MANUAL_VECTORIZATION)
     add_definitions(-DKGRAPH_NO_VECTORIZE)
-ENDIF(NOSIMD)
+endif(NOSIMD)
+
+option(NOPARALLEL "no parallel build")
+if(NOPARALLEL)
+    add_definitions(-DNO_PARALLEL_BUILD)
+endif(NOPARALLEL)
+
+include_directories(${PROJECT_SOURCE_DIR}/include)
+include_directories(${PROJECT_SOURCE_DIR}/include/common)
+include_directories(${PROJECT_SOURCE_DIR}/src)
+
 
 
 add_subdirectory(src/common)

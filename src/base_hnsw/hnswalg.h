@@ -7,6 +7,7 @@
 #include <list>
 #include <random>
 #include <unordered_set>
+#include <memory>
 
 #include "hnswlib.h"
 #include "visited_list_pool.h"

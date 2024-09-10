@@ -54,6 +54,15 @@ int main(int argc, char **argv) {
 #ifdef USE_SSE
   cout << "Use SSE" << endl;
 #endif
+#ifdef USE_AVX
+  cout << "Use AVX" << endl;
+#endif
+#ifdef USE_AVX512
+  cout << "Use AVX512" << endl;
+#endif
+#ifndef NO_PARALLEL_BUILD
+  cout << "Index Construct Parallelly" << endl;
+#endif
 
   // Parameters
   string dataset = "deep";
@@ -74,7 +83,7 @@ int main(int argc, char **argv) {
 
   for (int i = 0; i < argc; i++) {
     string arg = argv[i];
-    // if (arg == "-dataset") dataset = string(argv[i + 1]);
+    if (arg == "-dataset") dataset = string(argv[i + 1]);
     if (arg == "-N") data_size = atoi(argv[i + 1]);
     if (arg == "-dataset_path") dataset_path = string(argv[i + 1]);
     if (arg == "-query_path") query_path = string(argv[i + 1]);
