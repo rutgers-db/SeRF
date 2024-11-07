@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.12)
 project(RangeFiltering-ANNS)
+include(CheckCXXCompilerFlag)
 
 find_package(OpenMP)
 if (OPENMP_FOUND)
@@ -14,13 +15,6 @@ set(CMAKE_CXX_STANDARD 11)
 
 MESSAGE(${CMAKE_SYSTEM})
 
-find_package(Boost REQUIRED COMPONENTS timer chrono system program_options)
-
-
-if(Boost_FOUND)
-    include_directories(${Boost_INCLUDE_DIRS}) 
-    SET (LD_LIBRARY_PATH ${BOOST_LIBRARYDIR})
-endif()
 
 set(CMAKE_TRY_COMPILE_TARGET_TYPE "STATIC_LIBRARY")
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -49,7 +43,6 @@ endif()
 option(NOSIMD "build hnsw on SIMD")
 if(NOSIMD)
     add_definitions(-DNO_MANUAL_VECTORIZATION)
-    add_definitions(-DKGRAPH_NO_VECTORIZE)
 endif(NOSIMD)
 
 option(NOPARALLEL "no parallel build")

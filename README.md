@@ -14,6 +14,10 @@ This repo is the implementation of [SeRF: Segment Graph for Range Filtering Appr
 
 ### Compile and Run
 
+SeRF can be built from source using CMake. The only dependencies required are C++11 and OpenMP.
+
+We have tested the following build instructions on macOS (ARM) and Linux (x86-64):
+
 ```bash
 mkdir build && cd build
 cmake ..

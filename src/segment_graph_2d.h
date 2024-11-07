@@ -9,7 +9,6 @@
  */
 
 #include <algorithm>
-#include <boost/functional/hash.hpp>
 #include <ctime>
 #include <iostream>
 #include <limits>
@@ -216,9 +215,9 @@ class SegmentGraph2DHNSW : public HierarchicalNSW<float> {
       // internal_id)
       vector<pair<int, pair<dist_t, tableint>>> buffer_candidates;
 
-      using tableint_pair = std::pair<tableint, tableint>;
-      std::unordered_map<tableint_pair, dist_t, boost::hash<tableint_pair>>
-          visited_nn_dists;
+      // using tableint_pair = std::pair<tableint, tableint>;
+      // std::unordered_map<tableint_pair, dist_t, boost::hash<tableint_pair>>
+      //     visited_nn_dists;
 
       while (queue_closest.size()) {
         // If return list size meet M or current window exceed ef_construction,
