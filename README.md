@@ -25,9 +25,14 @@ make
 ```
 
 Running example benchmark on DEEP dataset:
+
 ```bash
 ./benchmark/deep_halfbound -N 10000 -dataset_path [path_to_deep_base.fvecs] -query_path [path_to_deep_query.fvecs]
 ./benchmark/deep_arbitrary -N 10000 -dataset_path [path_to_deep_base.fvecs] -query_path [path_to_deep_query.fvecs]
+
+# Running on sample dataset under "sample_data"
+./benchmark/deep_halfbound -N 10000 -dataset_path ../sample_data/deep_10k.fvecs -query_path ../sample_data/deep_query.fvecs
+./benchmark/deep_arbitrary -N 10000 -dataset_path ../sample_data/deep_10k.fvecs -query_path ../sample_data/deep_query.fvecs   
 ```
 
 Parameters:
@@ -38,8 +43,7 @@ Parameters:
 
 - `N`: The top-N number of vector using for indexing, load all vectors if not specify.
 
-
-We hardcoded some parameters, you can change them in the code and recompile.
+We hardcoded some parameters for the ease of demonstration, you can change them in the code and recompile.
 
 ## Dataset
 
