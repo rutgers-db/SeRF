@@ -384,6 +384,8 @@ class SegmentGraph2DHNSW : public HierarchicalNSW<float> {
     }
 
     for (size_t idx = 0; idx < selectedNeighbors.size(); idx++) {
+      // only keep half m, for removing duplicates for wiki-image
+      if ((maxM0_ == 64) && (idx > maxM0_ / 2)) break;
       std::unique_lock<std::mutex> lock(
           link_list_locks_[selectedNeighbors[idx]]);
 
