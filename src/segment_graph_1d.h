@@ -36,9 +36,9 @@ namespace SeRF {
  */
 template <typename dist_t>
 struct SegmentNeighbor1D {
-  SegmentNeighbor1D(int id) : id(id){};
+  SegmentNeighbor1D(int id) : id(id) {};
   SegmentNeighbor1D(int id, dist_t dist, int end_id)
-      : id(id), dist(dist), end_id(end_id){};
+      : id(id), dist(dist), end_id(end_id) {};
   int id;
   dist_t dist;
   int end_id;
@@ -51,8 +51,8 @@ class SegmentGraph1DHNSW : public HierarchicalNSW<float> {
  public:
   SegmentGraph1DHNSW(const BaseIndex::IndexParams &index_params,
                      SpaceInterface<dist_t> *s, size_t max_elements,
-                     size_t M = 16, size_t ef_construction = 200,
-                     size_t random_seed = 100)
+                     string dataset_name_, size_t M = 16,
+                     size_t ef_construction = 200, size_t random_seed = 100)
       : HierarchicalNSW(s, max_elements, M, index_params.ef_construction,
                         random_seed) {
     params = &index_params;
@@ -60,9 +60,11 @@ class SegmentGraph1DHNSW : public HierarchicalNSW<float> {
     ef_max_ = index_params.ef_construction;
     ef_basic_construction_ = index_params.ef_construction;
     ef_construction = index_params.ef_construction;
+    dataset_name = dataset_name_;
   }
 
   const BaseIndex::IndexParams *params;
+  string dataset_name;
 
   // index storing structure
   vector<vector<SegmentNeighbor1D<dist_t>>> *range_nns;
@@ -186,6 +188,11 @@ class SegmentGraph1DHNSW : public HierarchicalNSW<float> {
     }
 
     for (size_t idx = 0; idx < selectedNeighbors.size(); idx++) {
+      // only keep half m, for removing duplicates for wiki-image and yt8m-audio
+      if ((dataset_name == "wiki-image" || dataset_name == "yt8m-audio") &&
+          (idx > maxM0_ / 2)) {
+        break;
+      }
       std::unique_lock<std::mutex> lock(
           this->link_list_locks_[selectedNeighbors[idx]]);
 
@@ -338,8 +345,9 @@ class IndexSegmentGraph1D : public BaseIndex {
     // build HNSW
     L2Space space(data_wrapper->data_dim);
     SegmentGraph1DHNSW<float> hnsw(
-        *index_params, &space, 2 * data_wrapper->data_size, index_params->K,
-        index_params->ef_construction, index_params->random_seed);
+        *index_params, &space, 2 * data_wrapper->data_size,
+        data_wrapper->dataset, index_params->K, index_params->ef_construction,
+        index_params->random_seed);
 
     indexed_arr.clear();
     indexed_arr.resize(data_wrapper->data_size);

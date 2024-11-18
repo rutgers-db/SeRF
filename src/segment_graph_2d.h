@@ -56,16 +56,18 @@ class SegmentGraph2DHNSW : public HierarchicalNSW<float> {
  public:
   SegmentGraph2DHNSW(const BaseIndex::IndexParams &index_params,
                      SpaceInterface<float> *s, size_t max_elements,
-                     size_t M = 16, size_t ef_construction = 200,
-                     size_t random_seed = 100)
+                     string dataset_name_, size_t M = 16,
+                     size_t ef_construction = 200, size_t random_seed = 100)
       : HierarchicalNSW(s, max_elements, M, index_params.ef_construction,
                         random_seed) {
     params = &index_params;
     ef_max_ = index_params.ef_max;
+    dataset_name = dataset_name_;
   }
 
   const BaseIndex::IndexParams *params;
   vector<DirectedSegNeighbors> *segment_graph;
+  string dataset_name;
 
   // Rewrite the searching while construting HNSW, keep more neighbors.
   // TODO: maybe can be updated to a position sensing functions.
@@ -384,8 +386,11 @@ class SegmentGraph2DHNSW : public HierarchicalNSW<float> {
     }
 
     for (size_t idx = 0; idx < selectedNeighbors.size(); idx++) {
-      // only keep half m, for removing duplicates for wiki-image
-      if ((maxM0_ == 64) && (idx > maxM0_ / 2)) break;
+      // only keep half m, for removing duplicates for wiki-image and yt8m-audio
+      if ((dataset_name == "wiki-image" || dataset_name == "yt8m-audio") &&
+          (idx > maxM0_ / 2)) {
+        break;
+      }
       std::unique_lock<std::mutex> lock(
           link_list_locks_[selectedNeighbors[idx]]);
 
@@ -603,8 +608,9 @@ class IndexSegmentGraph2D : public BaseIndex {
     // build HNSW
     L2Space space(data_wrapper->data_dim);
     SegmentGraph2DHNSW<float> hnsw(
-        *index_params, &space, 2 * data_wrapper->data_size, index_params->K,
-        index_params->ef_construction, index_params->random_seed);
+        *index_params, &space, 2 * data_wrapper->data_size,
+        data_wrapper->dataset, index_params->K, index_params->ef_construction,
+        index_params->random_seed);
 
     directed_indexed_arr.clear();
     directed_indexed_arr.resize(data_wrapper->data_size);
