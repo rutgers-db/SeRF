@@ -27,26 +27,38 @@ make
 Running example benchmark on DEEP dataset:
 
 ```bash
-./benchmark/deep_halfbound -N 10000 -dataset_path [path_to_deep_base.fvecs] -query_path [path_to_deep_query.fvecs]
-./benchmark/deep_arbitrary -N 10000 -dataset_path [path_to_deep_base.fvecs] -query_path [path_to_deep_query.fvecs]
+./benchmark/serf_halfbound -N 10000 -dataset_path [path_to_deep_base.fvecs] -query_path [path_to_deep_query.fvecs]
+./benchmark/serf_arbitrary -N 10000 -dataset_path [path_to_deep_base.fvecs] -query_path [path_to_deep_query.fvecs]
 
 # Running on sample dataset under "sample_data"
-./benchmark/deep_halfbound -N 10000 -dataset_path ../sample_data/deep_10k.fvecs -query_path ../sample_data/deep_query.fvecs
-./benchmark/deep_arbitrary -N 10000 -dataset_path ../sample_data/deep_10k.fvecs -query_path ../sample_data/deep_query.fvecs   
+./benchmark/serf_halfbound -N 10000 -dataset_path ../sample_data/deep_10k.fvecs -query_path ../sample_data/deep_query.fvecs
+./benchmark/serf_arbitrary -N 10000 -dataset_path ../sample_data/deep_10k.fvecs -query_path ../sample_data/deep_query.fvecs
 ```
 
 Parameters:
 
-- `dataset_path`: The base dataset path for indexing, pre-sorted by search key
+- `-dataset_path`: The base dataset path for indexing, pre-sorted by search key
+- `-query_path`: The query vectors path
+- `-N`: The top-N number of vector using for indexing, load all vectors if not specify
 
-- `query_path`: The query vectors path
+Optional Parameters:
 
-- `N`: The top-N number of vector using for indexing, load all vectors if not specify.
+- `-dataset`: The dataset name, supported values: `deep,yt8m-audio,wiki-image`
+- `-index_k`: The maximum number of neighbors of HNSW index.
+- `-ef_con`: ef_construction for HNSW index.
+- `-ef_max`: The maximum number of neighbors for building SeRF.
+
+`index_k1`, `ef_con`, `ef_max`, `ef_search` support multiple values, separating by `,`.
+
+Sample command:
+
+```bash
+./benchmark/serf_arbitrary -N 10000 -dataset_path ../sample_data/deep_10k.fvecs -query_path ../sample_data/deep_query.fvecs -ef_search 40,60,80,100 -index_k 16
+```
 
 We hardcoded some parameters for the ease of demonstration, you can change them in the code and recompile.
 
 ## Dataset
-
 
 | Dataset | Data type | Dimensions | Search Key |
 | :- | :-: | :-: | :-: |
@@ -62,7 +74,7 @@ We hardcoded some parameters for the ease of demonstration, you can change them 
 
 ## Reference
 
-```
+```text
 @article{SeRF,
 author = {Zuo, Chaoji and Qiao, Miao and Zhou, Wenchao and Li, Feifei and Deng, Dong},
 title = {SeRF: Segment Graph for Range-Filtering Approximate Nearest Neighbor Search},

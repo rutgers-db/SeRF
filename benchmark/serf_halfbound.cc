@@ -75,10 +75,13 @@ int main(int argc, char **argv) {
   vector<int> ef_construction_list = {400};
   int query_num = 1000;
   int query_k = 10;
+  vector<int> searchef_para_range_list = {16, 64, 256};
+  bool full_range = false;
 
-  string indexk_str = "";
-  string ef_con_str = "";
-  // string ef_max_str = "";
+  string indexk_str = "8";
+  string ef_con_str = "100";
+  string ef_max_str = "500";
+  string ef_search_str = "16,64,256";
   string version = "Benchmark";
 
   for (int i = 0; i < argc; i++) {
@@ -88,9 +91,16 @@ int main(int argc, char **argv) {
     if (arg == "-dataset_path") dataset_path = string(argv[i + 1]);
     if (arg == "-query_path") query_path = string(argv[i + 1]);
     if (arg == "-groundtruth_path") groundtruth_path = string(argv[i + 1]);
-    // if (arg == "-ef_max") ef_max_str = string(argv[i + 1]);
+    if (arg == "-index_k") indexk_str = string(argv[i + 1]);
+    if (arg == "-ef_con") ef_con_str = string(argv[i + 1]);
+    if (arg == "-ef_search") ef_search_str = string(argv[i + 1]);
     if (arg == "-method") method = string(argv[i + 1]);
+    if (arg == "-full_range") full_range = true;
   }
+
+  index_k_list = str2vec(indexk_str);
+  ef_construction_list = str2vec(ef_con_str);
+  searchef_para_range_list = str2vec(ef_search_str);
 
   assert(index_k_list.size() != 0);
   assert(ef_construction_list.size() != 0);
@@ -100,14 +110,17 @@ int main(int argc, char **argv) {
   data_wrapper.readData(dataset_path, query_path);
 
   // Generate groundtruth
-  data_wrapper.generateHalfBoundedQueriesAndGroundtruthBenchmark(false);
+  // Generate groundtruth
+  if (full_range)
+    data_wrapper.generateHalfBoundedQueriesAndGroundtruth(false);
+  else
+    data_wrapper.generateHalfBoundedQueriesAndGroundtruthBenchmark(false);
 
   // Or you can load groundtruth from the given path
   // data_wrapper.LoadGroundtruth(groundtruth_path);
 
   assert(data_wrapper.query_ids.size() == data_wrapper.query_ranges.size());
 
-  vector<int> searchef_para_range_list = {16, 64, 256};
 
   cout << "index K:" << endl;
   print_set(index_k_list);

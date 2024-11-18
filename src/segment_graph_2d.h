@@ -666,7 +666,8 @@ class IndexSegmentGraph2D : public BaseIndex {
       const SearchParams *search_params, SearchInfo *search_info,
       const vector<float> &query,
       const std::pair<int, int> query_bound) override {
-    timeval tt1, tt2, tt3, tt4;
+    // timeval tt1, tt2, tt3, tt4;
+    timeval tt3, tt4;
 
     VisitedList *vl = visited_list_pool_->getFreeVisitedList();
     vl_type *visited_array = vl->mass;
@@ -702,7 +703,7 @@ class IndexSegmentGraph2D : public BaseIndex {
     // candidate_set.push(make_pair(-dist_enter, l_bound));
     // TODO: How to find proper enters.
 
-    size_t hop_counter = 0;
+    // size_t hop_counter = 0;
 
     while (!candidate_set.empty()) {
       std::pair<float, int> current_node_pair = candidate_set.top();
@@ -717,26 +718,15 @@ class IndexSegmentGraph2D : public BaseIndex {
            << -current_node_pair.first << endl;
 #endif
 
-      // if (search_info->is_investigate) {
-      //   search_info->SavePathInvestigate(current_node_pair.second,
-      //                                    -current_node_pair.first,
-      //                                    hop_counter, num_search_comparison);
-      // }
-      hop_counter++;
+      // hop_counter++;
 
       candidate_set.pop();
-
-      // // only search when candidate point is inside the range
-      // if (current_node_id < l_bound || current_node_id > r_bound) {
-      //   // cout << "no satisfied range point" << endl;
-      //   continue;
-      // }
 
       // search cw on the fly
       vector<int> current_neighbors;
       vector<const vector<int> *> neighbor_iterators;
 
-      gettimeofday(&tt1, NULL);
+      // gettimeofday(&tt1, NULL);
       // current_neighbors = decompressDeltaPath(
       //     directed_indexed_arr[current_node_id].forward_nns,
       //     directed_indexed_arr[current_node_id].reverse_nns, l_bound,
@@ -770,11 +760,9 @@ class IndexSegmentGraph2D : public BaseIndex {
             &directed_indexed_arr.at(current_node_id).reverse_nns);
       }
 
-      gettimeofday(&tt2, NULL);
-      AccumulateTime(tt1, tt2, search_info->fetch_nns_time);
-      // print_set(current_neighbors);
-      // assert(false);
-      gettimeofday(&tt1, NULL);
+      // gettimeofday(&tt2, NULL);
+      // AccumulateTime(tt1, tt2, search_info->fetch_nns_time);
+      // gettimeofday(&tt1, NULL);
 
       for (auto batch_it : neighbor_iterators) {
         for (auto candidate_id : *batch_it) {
@@ -809,8 +797,8 @@ class IndexSegmentGraph2D : public BaseIndex {
           }
         }
       }
-      gettimeofday(&tt2, NULL);
-      AccumulateTime(tt1, tt2, search_info->cal_dist_time);
+      // gettimeofday(&tt2, NULL);
+      // AccumulateTime(tt1, tt2, search_info->cal_dist_time);
     }
 
     vector<int> res;
@@ -841,7 +829,8 @@ class IndexSegmentGraph2D : public BaseIndex {
       const SearchParams *search_params, SearchInfo *search_info,
       const vector<float> &query,
       const std::pair<int, int> query_bound) override {
-    timeval tt1, tt2, tt3, tt4;
+    // timeval tt1, tt2, tt3, tt4;
+    timeval tt3, tt4;
 
     VisitedList *vl = visited_list_pool_->getFreeVisitedList();
     vl_type *visited_array = vl->mass;
@@ -849,6 +838,7 @@ class IndexSegmentGraph2D : public BaseIndex {
     float lower_bound = std::numeric_limits<float>::max();
     std::priority_queue<pair<float, int>> top_candidates;
     std::priority_queue<pair<float, int>> candidate_set;
+    auto ef = search_params->search_ef;
 
     search_info->total_comparison = 0;
     search_info->internal_search_time = 0;
@@ -863,14 +853,14 @@ class IndexSegmentGraph2D : public BaseIndex {
       for (size_t i = 0; i < 3; i++) {
         int point = lbound + interval * i;
         float dist = EuclideanDistance(data_wrapper->nodes[point], query);
-        candidate_set.push(make_pair(-dist, point));
+        candidate_set.emplace(-dist, point);
         enter_list.emplace_back(point);
         visited_array[point] = visited_array_tag;
       }
     }
     gettimeofday(&tt3, NULL);
 
-    size_t hop_counter = 0;
+    // size_t hop_counter = 0;
 
     while (!candidate_set.empty()) {
       std::pair<float, int> current_node_pair = candidate_set.top();
@@ -879,19 +869,15 @@ class IndexSegmentGraph2D : public BaseIndex {
       if (-current_node_pair.first > lower_bound) {
         break;
       }
-      // if (search_info->is_investigate) {
-      //   search_info->SavePathInvestigate(current_node_pair.second,
-      //                                    -current_node_pair.first,
-      //                                    hop_counter, num_search_comparison);
-      // }
-      hop_counter++;
+
+      // hop_counter++;
 
       candidate_set.pop();
       vector<int> current_neighbors;
       // vector<vector<OneSegmentNeighbors>::const_iterator> neighbor_iterators;
       vector<const vector<int> *> neighbor_iterators;
 
-      gettimeofday(&tt1, NULL);
+      // gettimeofday(&tt1, NULL);
       {
         auto forward_it = decompressForwardPath(
             directed_indexed_arr[current_node_id].forward_nns,
@@ -902,12 +888,12 @@ class IndexSegmentGraph2D : public BaseIndex {
         }
         // Update: update the reverse structure
         neighbor_iterators.emplace_back(
-            &directed_indexed_arr.at(current_node_id).reverse_nns);
+            &directed_indexed_arr[current_node_id].reverse_nns);
       }
 
-      gettimeofday(&tt2, NULL);
-      AccumulateTime(tt1, tt2, search_info->fetch_nns_time);
-      gettimeofday(&tt1, NULL);
+      // gettimeofday(&tt2, NULL);
+      // AccumulateTime(tt1, tt2, search_info->fetch_nns_time);
+      // gettimeofday(&tt1, NULL);
 
       for (auto batch_it : neighbor_iterators) {
         unsigned visited_nn_num = 0;
@@ -927,22 +913,22 @@ class IndexSegmentGraph2D : public BaseIndex {
                                       dist_func_param_);
 
             num_search_comparison++;
-            if (top_candidates.size() < search_params->search_ef ||
-                lower_bound > dist) {
+
+            if (top_candidates.size() < ef) {
               candidate_set.emplace(-dist, candidate_id);
               top_candidates.emplace(dist, candidate_id);
-              if (top_candidates.size() > search_params->search_ef) {
-                top_candidates.pop();
-              }
-              if (!top_candidates.empty()) {
-                lower_bound = top_candidates.top().first;
-              }
+              lower_bound = top_candidates.top().first;
+            } else if (dist < lower_bound) {
+              candidate_set.emplace(-dist, candidate_id);
+              top_candidates.emplace(dist, candidate_id);
+              top_candidates.pop();
+              lower_bound = top_candidates.top().first;
             }
           }
         }
       }
-      gettimeofday(&tt2, NULL);
-      AccumulateTime(tt1, tt2, search_info->cal_dist_time);
+      // gettimeofday(&tt2, NULL);
+      // AccumulateTime(tt1, tt2, search_info->cal_dist_time);
     }
 
     vector<int> res;

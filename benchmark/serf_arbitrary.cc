@@ -1,20 +1,20 @@
 /**
- * @file exp_halfbound.cc
+ * @file benchmark_arbitrary.cc
  * @author Chaoji Zuo (chaoji.zuo@rutgers.edu)
- * @brief Benchmark Half-Bounded Range Filter Search
- * @date 2023-12-22
+ * @brief Benchmark Arbitrary Range Filter Search
+ * @date 2024-11-17
  *
- * @copyright Copyright (c) 2023
+ * @copyright Copyright (c) 2024
  */
 
 #include <algorithm>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <numeric>
 #include <random>
 #include <sstream>
 #include <vector>
-#include <iomanip>
 // #include "baselines/knn_first_hnsw.h"
 #include "data_processing.h"
 #include "data_wrapper.h"
@@ -75,10 +75,13 @@ int main(int argc, char **argv) {
   int query_num = 1000;
   int query_k = 10;
   vector<int> ef_max_list = {500};
+  vector<int> searchef_para_range_list = {16, 64, 256};
+  bool full_range = false;
 
-  string indexk_str = "";
-  string ef_con_str = "";
-  // string ef_max_str = "";
+  string indexk_str = "8";
+  string ef_con_str = "100";
+  string ef_max_str = "500";
+  string ef_search_str = "16,64,256";
   string version = "Benchmark";
 
   for (int i = 0; i < argc; i++) {
@@ -88,9 +91,18 @@ int main(int argc, char **argv) {
     if (arg == "-dataset_path") dataset_path = string(argv[i + 1]);
     if (arg == "-query_path") query_path = string(argv[i + 1]);
     if (arg == "-groundtruth_path") groundtruth_path = string(argv[i + 1]);
-    // if (arg == "-ef_max") ef_max_str = string(argv[i + 1]);
+    if (arg == "-index_k") indexk_str = string(argv[i + 1]);
+    if (arg == "-ef_con") ef_con_str = string(argv[i + 1]);
+    if (arg == "-ef_max") ef_max_str = string(argv[i + 1]);
+    if (arg == "-ef_search") ef_search_str = string(argv[i + 1]);
     if (arg == "-method") method = string(argv[i + 1]);
+    if (arg == "-full_range") full_range = true;
   }
+
+  index_k_list = str2vec(indexk_str);
+  ef_construction_list = str2vec(ef_con_str);
+  ef_max_list = str2vec(ef_max_str);
+  searchef_para_range_list = str2vec(ef_search_str);
 
   assert(index_k_list.size() != 0);
   assert(ef_construction_list.size() != 0);
@@ -100,13 +112,14 @@ int main(int argc, char **argv) {
   data_wrapper.readData(dataset_path, query_path);
 
   // Generate groundtruth
-  data_wrapper.generateRangeFilteringQueriesAndGroundtruthBenchmark(false);
+  if (full_range)
+    data_wrapper.generateRangeFilteringQueriesAndGroundtruth(false);
+  else
+    data_wrapper.generateRangeFilteringQueriesAndGroundtruthBenchmark(false);
   // Or you can load groundtruth from the given path
   // data_wrapper.LoadGroundtruth(groundtruth_path);
 
   assert(data_wrapper.query_ids.size() == data_wrapper.query_ranges.size());
-
-  vector<int> searchef_para_range_list = {16, 64, 256};
 
   cout << "index K:" << endl;
   print_set(index_k_list);
