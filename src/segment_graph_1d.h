@@ -619,15 +619,45 @@ class IndexSegmentGraph1D : public BaseIndex {
     return res;
   }
 
-  // TODO: save and load segment graph 1d
-  void save(const string &save_path) {}
+  void save(const string &save_path) {
+    std::ofstream output(save_path, std::ios::binary);
+    unsigned counter = 0;
+    for (auto &segment : indexed_arr) {
+      base_hnsw::writeBinaryPOD(output, (int)segment.size());
+      counter++;
+      for (auto &nn : segment) {
+        base_hnsw::writeBinaryPOD(output, nn.id);
+        base_hnsw::writeBinaryPOD(output, nn.end_id);
+        counter += 2;
+      }
+    }
+    cout << "Total write " << counter << " (int) to file " << save_path << endl;
+  }
 
-  void load(const string &load_path) {}
-
-  ~IndexSegmentGraph1D() {
-    delete index_info;
+  void load(const string &load_path) {
+    std::ifstream input(load_path, std::ios::binary);
+    if (!input.is_open()) throw std::runtime_error("Cannot open file");
+    cout << sizeof(size_t) << endl;
     indexed_arr.clear();
-    delete visited_list_pool_;
+    indexed_arr.reserve(data_wrapper->data_size);
+    int nn_num;
+    int id;
+    int end_id;
+    for (size_t i = 0; i < data_wrapper->data_size; i++) {
+      base_hnsw::readBinaryPOD(input, nn_num);
+
+      vector<SegmentNeighbor1D<dist_t>> neighbors;
+      for (size_t j = 0; j < nn_num; j++) {
+        base_hnsw::readBinaryPOD(input, id);
+        base_hnsw::readBinaryPOD(input, end_id);
+        SegmentNeighbor1D<dist_t> nn(id, end_id);
+        neighbors.emplace_back(nn);
+      }
+      indexed_arr.emplace_back(neighbors);
+    }
+    // printOnebatch();
+    countNeighbors();
+    cout << "Total # of neighbors: " << index_info->nodes_amount << endl;
   }
 };
 

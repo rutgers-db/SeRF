@@ -386,9 +386,11 @@ class SegmentGraph2DHNSW : public HierarchicalNSW<float> {
     }
 
     for (size_t idx = 0; idx < selectedNeighbors.size(); idx++) {
-      // only keep half m, for removing duplicates for wiki-image and yt8m-audio
-      if ((dataset_name == "wiki-image" || dataset_name == "yt8m-audio") &&
-          (idx > maxM0_ / 2)) {
+      // Note: only keep partial m when first constructing, for removing
+      // duplicates for wiki-image and yt8m-audio, just randomly pick a
+      // threshold.
+      // TODO: better duplicate strategy during graph contruction
+      if (idx > (maxM0_ * 0.7)) {
         break;
       }
       std::unique_lock<std::mutex> lock(
@@ -961,6 +963,128 @@ class IndexSegmentGraph2D : public BaseIndex {
     CountTime(tt3, tt4, search_info->internal_search_time);
 
     return res;
+  }
+
+  void countNeighbors() {
+    double batch_counter = 0;
+    double max_batch_counter = 0;
+    size_t max_reverse_nn = 0;
+    index_info->nodes_amount = 0;
+    if (!directed_indexed_arr.empty())
+      for (unsigned j = 0; j < directed_indexed_arr.size(); j++) {
+        int temp_size = 0;
+        for (auto nns : directed_indexed_arr[j].forward_nns) {
+          temp_size += nns.nns_id.size();
+        }
+        batch_counter += directed_indexed_arr[j].forward_nns.size();
+        index_info->nodes_amount += temp_size;
+      }
+    index_info->avg_forward_nns =
+        index_info->nodes_amount / (float)data_wrapper->data_size;
+    if (isLog) {
+      cout << "Max. forward batch nn #: " << std::setprecision(3)
+           << max_batch_counter << endl;
+      cout << "Avg. forward nn #: "
+           << index_info->nodes_amount / (float)data_wrapper->data_size << endl;
+      cout << "Avg. forward batch #: "
+           << batch_counter / (float)data_wrapper->data_size << endl;
+      batch_counter = 0;
+    }
+
+    int reverse_node_amount = 0;
+    if (!directed_indexed_arr.empty()) {
+      for (unsigned j = 0; j < directed_indexed_arr.size(); j++) {
+        reverse_node_amount += directed_indexed_arr[j].reverse_nns.size();
+        batch_counter += 1;
+        max_reverse_nn = std::max(max_reverse_nn,
+                                  directed_indexed_arr[j].reverse_nns.size());
+      }
+    }
+
+    index_info->nodes_amount += reverse_node_amount;
+    index_info->avg_reverse_nns =
+        reverse_node_amount / (float)data_wrapper->data_size;
+    if (isLog) {
+      cout << "Max. reverse nn #: " << max_reverse_nn << endl;
+      cout << "Avg. reverse nn #: "
+           << reverse_node_amount / (float)data_wrapper->data_size << endl;
+      cout << "Avg. reverse batch #: "
+           << batch_counter / (float)data_wrapper->data_size << endl;
+      cout << "Avg. delta nn #: "
+           << index_info->nodes_amount / (float)data_wrapper->data_size << endl;
+    }
+  }
+
+  void save(const string &save_path) {
+    std::ofstream output(save_path, std::ios::binary);
+    unsigned counter = 0;
+    for (auto &segment : directed_indexed_arr) {
+      base_hnsw::writeBinaryPOD(output, (int)segment.forward_nns.size());
+      base_hnsw::writeBinaryPOD(output, (int)segment.reverse_nns.size());
+
+      counter += 2;
+      for (auto &nn : segment.forward_nns) {
+        base_hnsw::writeBinaryPOD(output, nn.batch);
+        base_hnsw::writeBinaryPOD(output, nn.start);
+        base_hnsw::writeBinaryPOD(output, nn.end);
+        base_hnsw::writeBinaryPOD(output, (int)nn.nns_id.size());
+        for (auto &nn_id : nn.nns_id) {
+          base_hnsw::writeBinaryPOD(output, nn_id);
+          counter += 1;
+        }
+        counter += 4;
+      }
+      for (auto &nn_id : segment.reverse_nns) {
+        base_hnsw::writeBinaryPOD(output, nn_id);
+        counter += 1;
+      }
+    }
+    cout << "Total write " << counter << " (int) to file " << save_path << endl;
+  }
+
+  void load(const string &load_path) {
+    std::ifstream input(load_path, std::ios::binary);
+    if (!input.is_open()) throw std::runtime_error("Cannot open file");
+    directed_indexed_arr.clear();
+    directed_indexed_arr.resize(data_wrapper->data_size);
+    int forward_num;
+    int reverse_num;
+    int batch_num;
+    int start_pos;
+    int end_pos;
+    int nn_size;
+    int one_nn;
+    for (size_t i = 0; i < data_wrapper->data_size; i++) {
+      base_hnsw::readBinaryPOD(input, forward_num);
+      base_hnsw::readBinaryPOD(input, reverse_num);
+
+      vector<OneSegmentNeighbors> neighbors;
+      for (size_t j = 0; j < forward_num; j++) {
+        base_hnsw::readBinaryPOD(input, batch_num);
+        base_hnsw::readBinaryPOD(input, start_pos);
+        base_hnsw::readBinaryPOD(input, end_pos);
+        base_hnsw::readBinaryPOD(input, nn_size);
+        vector<int> forward_nns;
+        for (size_t k = 0; k < nn_size; k++) {
+          base_hnsw::readBinaryPOD(input, one_nn);
+          forward_nns.emplace_back(one_nn);
+        }
+        OneSegmentNeighbors one_forward_segment(batch_num, start_pos, end_pos);
+        one_forward_segment.nns_id.swap(forward_nns);
+        neighbors.emplace_back(one_forward_segment);
+      }
+
+      vector<int> reverse_nns;
+      for (size_t j = 0; j < reverse_num; j++) {
+        base_hnsw::readBinaryPOD(input, one_nn);
+        reverse_nns.emplace_back(one_nn);
+      }
+      directed_indexed_arr[i].forward_nns.swap(neighbors);
+      directed_indexed_arr[i].reverse_nns.swap(reverse_nns);
+    }
+    printOnebatch();
+    countNeighbors();
+    cout << "Total # of neighbors: " << index_info->nodes_amount << endl;
   }
 
   ~IndexSegmentGraph2D() {
